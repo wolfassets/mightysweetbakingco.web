@@ -19,7 +19,7 @@ import experimentalRoutes from './routes/experimental.js'
 const PORT = Number(process.env.PORT ?? 4002)
 const API_BASE = process.env.API_BASE ?? 'http://localhost:3000'
 
-const app = new Hono()
+export const app = new Hono()
 
 // Static assets (compiled Tailwind CSS, fonts). cwd = apps/web-c during dev.
 app.use(
@@ -90,6 +90,10 @@ if (process.env.NODE_ENV !== 'production') {
   })
 }
 
-serve({ fetch: app.fetch, port: PORT })
-console.log(`web-c listening on http://localhost:${PORT}`)
-console.log(`fetching api from ${API_BASE}`)
+// Local dev only — Vercel imports `app` and wraps it in a serverless handler
+// (see api/index.ts), so we must NOT start a long-lived server there.
+if (!process.env.VERCEL) {
+  serve({ fetch: app.fetch, port: PORT })
+  console.log(`web-c listening on http://localhost:${PORT}`)
+  console.log(`fetching api from ${API_BASE}`)
+}

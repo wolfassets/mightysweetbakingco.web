@@ -1,0 +1,9 @@
+{
+  "$schema": "https://openapi.vercel.sh/vercel.json",
+  "buildCommand": "npm run build:css && mkdir -p public/files && cp node_modules/@fontsource-variable/geist/files/*.woff2 public/files/ 2>/dev/null; cp node_modules/@fontsource-variable/geist-mono/files/*.woff2 public/files/ 2>/dev/null; true",
+  "outputDirectory": "public",
+  "rewrites": [
+    { "source": "/static/(.*)", "destination": "/$1" },
+    { "source": "/(.*)", "destination": "/api" }
+  ]
+}
