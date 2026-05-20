@@ -1,0 +1,29 @@
+{
+  "name": "@mightysweet/web-c",
+  "version": "0.0.1",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "concurrently -k -n css,srv -c yellow,cyan \"pnpm dev:css\" \"pnpm dev:server\"",
+    "dev:css": "tailwindcss -i src/styles/globals.css -o public/style.css --watch",
+    "dev:server": "tsx watch --env-file=.env src/index.tsx",
+    "build:css": "tailwindcss -i src/styles/globals.css -o public/style.css --minify",
+    "build": "pnpm build:css && tsc",
+    "start": "node dist/index.js",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@fontsource-variable/geist": "^5.2.8",
+    "@fontsource-variable/geist-mono": "^5.2.8",
+    "@hono/node-server": "^1.13.7",
+    "hono": "^4.6.12"
+  },
+  "devDependencies": {
+    "@tailwindcss/cli": "^4.1.18",
+    "@types/node": "^22.0.0",
+    "concurrently": "^9.0.0",
+    "tailwindcss": "^4.1.18",
+    "tsx": "^4.19.2",
+    "typescript": "^5.6.0"
+  }
+}
