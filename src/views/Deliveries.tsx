@@ -1029,44 +1029,74 @@ const HiddenState: FC<{ baseQuery: Record<string, string | null | undefined>; om
 
 const CLIENT_FILTER_SCRIPT = `
 (function(){
-  // Popover open/close — replaces server-side ?openFilter= round-trips. Click a
-  // pill button: toggle its popover. Click outside: close all. Esc: close all.
+  // ── Event delegation ──────────────────────────────────────────────────────
+  // A SINGLE document click listener resolves every interactive element by its
+  // data-* attribute. Because it lives on document (not per-button), it works
+  // regardless of when buttons are added (initial load OR htmx swap) — so there
+  // is never a "needs a second click because the listener wasn't bound yet"
+  // situation. No per-element binding, no rebinding after swaps.
   function closeAllPopovers(){
     document.querySelectorAll('[data-pill-popover]').forEach(function(p){ p.classList.add('hidden'); });
     document.querySelectorAll('[data-pill-chevron]').forEach(function(c){ c.classList.remove('rotate-180'); });
   }
-  function bindPopovers(){
-    document.querySelectorAll('[data-pill-trigger]').forEach(function(btn){
-      if (btn.dataset.popoverBound) return;
-      btn.dataset.popoverBound = '1';
-      btn.addEventListener('click', function(e){
-        e.preventDefault();
-        e.stopPropagation();
-        var key = btn.getAttribute('data-pill-trigger');
-        var pop = document.querySelector('[data-pill-popover="' + key + '"]');
-        if (!pop) return;
-        var wasOpen = !pop.classList.contains('hidden');
-        closeAllPopovers();
-        if (!wasOpen) {
-          pop.classList.remove('hidden');
-          var chev = btn.querySelector('[data-pill-chevron]');
-          if (chev) chev.classList.add('rotate-180');
-        }
-      });
-    });
-  }
-  // Close on outside click + Escape
+
   document.addEventListener('click', function(e){
-    if (e.target.closest('[data-pill]') || e.target.closest('[data-pill-popover]')) return;
-    closeAllPopovers();
+    var trigger = e.target.closest('[data-pill-trigger]');
+    var clearPillEl = e.target.closest('[data-pill-clear]');
+    var preset = e.target.closest('[data-date-preset]');
+    var clearAllEl = e.target.closest('[data-clear-all]');
+
+    if (clearPillEl) {
+      e.preventDefault(); e.stopPropagation();
+      clearPill(clearPillEl.getAttribute('data-pill-clear'));
+      return;
+    }
+    if (preset) {
+      e.preventDefault();
+      applyDatePreset(preset.getAttribute('data-date-preset'));
+      return;
+    }
+    if (clearAllEl) {
+      e.preventDefault();
+      clearAll();
+      return;
+    }
+    if (trigger) {
+      e.preventDefault();
+      var key = trigger.getAttribute('data-pill-trigger');
+      var pop = document.querySelector('[data-pill-popover="' + key + '"]');
+      if (!pop) return;
+      var wasOpen = !pop.classList.contains('hidden');
+      closeAllPopovers();
+      if (!wasOpen) {
+        pop.classList.remove('hidden');
+        var chev = trigger.querySelector('[data-pill-chevron]');
+        if (chev) chev.classList.add('rotate-180');
+      }
+      return;
+    }
+    // Click outside any pill / popover → close everything.
+    if (!e.target.closest('[data-pill]') && !e.target.closest('[data-pill-popover]')) {
+      closeAllPopovers();
+    }
   });
   document.addEventListener('keydown', function(e){
     if (e.key === 'Escape') closeAllPopovers();
   });
 
+  // Filter form inputs: delegate input/change too so typing always filters.
+  document.addEventListener('input', function(e){
+    if (e.target.closest('form[data-filter-form]')) schedule();
+  });
+  document.addEventListener('change', function(e){
+    if (e.target.closest('form[data-filter-form]')) schedule();
+  });
+  document.addEventListener('submit', function(e){
+    if (e.target.closest('form[data-filter-form]')) { e.preventDefault(); applyFilters(); }
+  });
+
   // Client-side row filtering: reads filter form inputs and toggles row visibility
-  // instantly without a server roundtrip. Falls back to server-side filtering if
-  // user hits Apply (the form still submits normally).
+  // instantly without a server roundtrip.
   function applyFilters(){
     var rows = document.querySelectorAll('tr.delivery-row');
     var storeBoxes = document.querySelectorAll('input[name="stores"]:checked');
@@ -1147,40 +1177,11 @@ const CLIENT_FILTER_SCRIPT = `
     Object.keys(pillFields).forEach(clearPill);
   }
 
-  // Intercept form submit so we don't navigate
-  function bind(){
-    bindPopovers();
-    document.querySelectorAll('[data-date-preset]').forEach(function(btn){
-      if (btn.dataset.boundPreset) return; btn.dataset.boundPreset = '1';
-      btn.addEventListener('click', function(e){
-        e.preventDefault();
-        applyDatePreset(btn.getAttribute('data-date-preset'));
-      });
-    });
-    document.querySelectorAll('[data-pill-clear]').forEach(function(el){
-      if (el.dataset.boundClear) return; el.dataset.boundClear = '1';
-      el.addEventListener('click', function(e){
-        e.preventDefault(); e.stopPropagation();
-        clearPill(el.getAttribute('data-pill-clear'));
-      });
-    });
-    document.querySelectorAll('[data-clear-all]').forEach(function(el){
-      if (el.dataset.boundClearAll) return; el.dataset.boundClearAll = '1';
-      el.addEventListener('click', function(e){ e.preventDefault(); clearAll(); });
-    });
-    document.querySelectorAll('form[data-filter-form]').forEach(function(f){
-      if (f.dataset.bound) return; f.dataset.bound = '1';
-      f.addEventListener('submit', function(e){ e.preventDefault(); applyFilters(); });
-      f.querySelectorAll('input, select').forEach(function(el){
-        el.addEventListener('input', schedule);
-        el.addEventListener('change', schedule);
-      });
-    });
-    applyFilters();
-  }
-  if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', bind);
-  else bind();
-  document.body.addEventListener('htmx:afterSwap', bind);
+  // Initial filter pass + re-filter after any htmx swap (the delegated click /
+  // input listeners above never need re-binding).
+  if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', applyFilters);
+  else applyFilters();
+  document.body.addEventListener('htmx:afterSwap', applyFilters);
 })();
 `
 
