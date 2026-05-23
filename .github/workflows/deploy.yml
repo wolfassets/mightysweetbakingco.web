@@ -1,0 +1,72 @@
+name: CI / Deploy
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+# Only one deploy at a time. New pushes cancel in-flight deploys.
+concurrency:
+  group: deploy-web-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  # ───────────────────────────────────────────────────────────────────────────
+  # Build gate — install deps + compile Tailwind. Hosted runner, no secrets.
+  # The app runs via `tsx` (no compile step), so `tsc` is informational only.
+  # ───────────────────────────────────────────────────────────────────────────
+  build:
+    name: Build CSS + typecheck
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Install
+        run: npm install --no-audit --no-fund --ignore-scripts
+      - name: Build Tailwind CSS
+        run: npm run build:css
+      - name: Typecheck (informational — app runs via tsx, not tsc)
+        run: npx tsc --noEmit
+        continue-on-error: true
+
+  # ───────────────────────────────────────────────────────────────────────────
+  # Deploy — SSH to the Toronto VM and trigger its forced command. The deploy
+  # key on the VM can ONLY run `~/deploy-web.sh` (git reset --hard origin/main,
+  # npm install, build:css, restart web-c.service); it has no shell and cannot
+  # pass arguments. So even if DEPLOY_SSH_KEY leaked, an attacker could only
+  # redeploy main — which they'd already control via a merged PR.
+  # ───────────────────────────────────────────────────────────────────────────
+  deploy:
+    name: Deploy to Oracle Toronto
+    needs: build
+    if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+    steps:
+      - name: Set up SSH agent
+        uses: webfactory/ssh-agent@v0.9.1
+        with:
+          ssh-private-key: ${{ secrets.DEPLOY_SSH_KEY }}
+
+      - name: Trust the VM's host key
+        run: |
+          mkdir -p ~/.ssh
+          ssh-keyscan -t ed25519,rsa 40.233.108.39 >> ~/.ssh/known_hosts 2>/dev/null
+
+      - name: Trigger deploy (forced command on VM)
+        run: ssh -o StrictHostKeyChecking=accept-new ubuntu@40.233.108.39 true
+
+      - name: Wait for health
+        run: |
+          for i in $(seq 1 30); do
+            if curl -fsS --max-time 5 https://dev.p1.wolfassets.org/ >/dev/null; then
+              echo "✅ live after ~$((i * 2))s"
+              exit 0
+            fi
+            sleep 2
+          done
+          echo "❌ site never came back up"
+          exit 1
