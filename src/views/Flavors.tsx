@@ -230,7 +230,8 @@ export const FlavorMainRow: FC<{ f: Flavor; index: number; total: number; highli
         hx-get={`/flavors/${f.id}/add-tier`}
         hx-target={`#flavor-block-${f.id}`}
         hx-swap="outerHTML"
-        class="rounded-full w-20 py-1 text-button-sm text-green-600 dark:text-green-400 bg-green-50 dark:bg-green-950/40 hover:bg-green-100 dark:hover:bg-green-900/40 transition-colors text-center"
+        class="relative overflow-hidden rounded-full w-20 py-1 text-button-sm transition-all select-none text-center hover:brightness-95"
+        style="background: rgba(240,253,244,1); color: #16a34a; border: 1px solid #bbf7d0;"
       >
         Add rate
       </button>
@@ -498,8 +499,7 @@ const TableHeader: FC = () => (
       <th class="w-28">Unit Price</th>
       <th class="w-28">Unit Cost</th>
       <th class="w-24">Margin</th>
-      <th class="w-20"></th>
-      <th class="w-20"></th>
+      <th colspan={2} class="w-40 text-center">Actions</th>
     </tr>
   </thead>
 )
