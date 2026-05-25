@@ -1,7 +1,6 @@
 import type { FC, PropsWithChildren } from 'hono/jsx'
 import { Fragment } from 'hono/jsx'
 import { Layout } from './Layout.js'
-import { HoldArchiveButton } from './components.js'
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Types (kept verbatim from web-b)
@@ -101,6 +100,36 @@ const buildQuery = (overrides: Record<string, string | null | undefined>, base: 
   const qs = new URLSearchParams(merged).toString()
   return qs ? `?${qs}` : ''
 }
+
+const ArchiveDeliveryButton: FC<{ url: string; target: string }> = ({ url, target }) => (
+  <button
+    type="button"
+    onclick="event.stopPropagation();"
+    class="relative overflow-hidden rounded-full w-24 py-1 text-button-sm transition-all select-none text-center hover:brightness-95"
+    style="background: #eff6ff; color: #2563eb; border: 1px solid #bfdbfe;"
+    hx-delete={url}
+    hx-target={target}
+    hx-swap="outerHTML"
+    title="Archive"
+  >
+    Archive
+  </button>
+)
+
+const UnarchiveDeliveryButton: FC<{ url: string; target: string }> = ({ url, target }) => (
+  <button
+    type="button"
+    onclick="event.stopPropagation();"
+    class="relative overflow-hidden rounded-full w-24 py-1 text-button-sm transition-all select-none text-center hover:brightness-95"
+    style="background: #fffbeb; color: #d97706; border: 1px solid #fde68a;"
+    hx-post={url}
+    hx-target={target}
+    hx-swap="outerHTML"
+    title="Unarchive"
+  >
+    Unarchive
+  </button>
+)
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Sortable Header — replaces web-b's <SortableHeader /> w/ link nav
@@ -270,9 +299,8 @@ const RangeRow: FC<{
 
 const AddStoreForm: FC<{ uniqueStores: string[]; isOpen: boolean }> = ({ uniqueStores, isOpen }) => {
   const today = new Date().toISOString().slice(0, 10)
-  if (!isOpen) return null
   return (
-    <div class="px-8 pb-4">
+    <div id="add-store-panel" class={`px-8 pb-4 ${isOpen ? '' : 'hidden'}`}>
       <div class="bg-white dark:bg-[#0a0a0a] dark:border dark:border-[#262626] rounded-2xl shadow-sm p-5 fade-in">
         <form
           hx-post="/deliveries"
@@ -284,6 +312,7 @@ const AddStoreForm: FC<{ uniqueStores: string[]; isOpen: boolean }> = ({ uniqueS
           <div class="col-span-5">
             <label class="block text-caption uppercase tracking-[0.08em] text-gray-500 dark:text-zinc-400 mb-1.5">Store name</label>
             <input
+              id="add-store-name"
               name="storeName"
               required
               list="existing-stores"
@@ -330,42 +359,50 @@ const AddStoreForm: FC<{ uniqueStores: string[]; isOpen: boolean }> = ({ uniqueS
 // Delivery rows (list view + by-store view)
 // ─────────────────────────────────────────────────────────────────────────────
 
-export const DeliveryRow: FC<{ d: Delivery; showArchived: boolean; hideStore?: boolean }> = ({ d, showArchived, hideStore }) => (
-  <tr
-    id={`delivery-${d.id}`}
-    class="delivery-row group cursor-pointer hover:bg-[#fafafa] dark:hover:bg-[#171717] transition-colors fade-in"
-    onclick={`window.location='/deliveries/${d.id}'`}
-    data-store={d.storeName.trim().toLowerCase()}
-    data-date={d.dropoffDate || d.datePrepared}
-    data-rev={d.totalRevenue.toString()}
-    data-prof={d.grossProfit.toString()}
-    data-prep={d.totalPrepared.toString()}
-  >
+export const DeliveryRow: FC<{ d: Delivery; showArchived: boolean; hideStore?: boolean }> = ({ d, showArchived, hideStore }) => {
+  void showArchived
+  const isArchived = Boolean(d.deletedAt)
+  const rowClass = isArchived
+    ? 'delivery-row group fade-in bg-slate-50/80 text-slate-500 dark:bg-[#111827]/40 dark:text-zinc-500 cursor-default'
+    : 'delivery-row group cursor-pointer hover:bg-[#fafafa] dark:hover:bg-[#171717] transition-colors fade-in'
+  const archivedText = isArchived ? ' text-slate-500 dark:text-zinc-500 line-through decoration-slate-400 dark:decoration-zinc-600' : ''
+
+  return (
+    <tr
+      id={`delivery-${d.id}`}
+      class={rowClass}
+      {...(!isArchived ? { onclick: `window.location='/deliveries/${d.id}'` } : {})}
+      data-store={d.storeName.trim().toLowerCase()}
+      data-date={d.dropoffDate || d.datePrepared}
+      data-rev={d.totalRevenue.toString()}
+      data-prof={d.grossProfit.toString()}
+      data-prep={d.totalPrepared.toString()}
+    >
     <td>
-      <span class="px-2 py-3 min-h-[44px] flex items-center justify-center text-pink-600 dark:text-pink-400 text-callout">{d.id}</span>
+      <span class={`px-2 py-3 min-h-[44px] flex items-center justify-center text-callout ${isArchived ? 'text-slate-400 dark:text-zinc-600' : 'text-pink-600 dark:text-pink-400'}`}>{d.id}</span>
     </td>
     {!hideStore && (
       <td>
-        <span class="px-4 py-3 min-h-[44px] flex items-center text-gray-900 dark:text-zinc-100 text-headline">{d.storeName}</span>
+        <span class={`px-4 py-3 min-h-[44px] flex items-center text-gray-900 dark:text-zinc-100 text-headline${archivedText}`}>{d.storeName}</span>
       </td>
     )}
     <td>
-      <span class="px-4 py-3 min-h-[44px] flex items-center text-gray-600 dark:text-zinc-400 text-callout whitespace-nowrap">
+      <span class={`px-4 py-3 min-h-[44px] flex items-center text-gray-600 dark:text-zinc-400 text-callout whitespace-nowrap${archivedText}`}>
         {d.dropoffDate ? formatDateFull(d.dropoffDate) : <span class="text-gray-300 dark:text-zinc-700">--</span>}
       </span>
     </td>
     <td>
-      <span class="px-4 py-3 min-h-[44px] flex items-center text-gray-600 dark:text-zinc-400 text-callout whitespace-nowrap">
+      <span class={`px-4 py-3 min-h-[44px] flex items-center text-gray-600 dark:text-zinc-400 text-callout whitespace-nowrap${archivedText}`}>
         {formatDateFull(d.datePrepared)}
       </span>
     </td>
     <td>
-      <span class="px-4 py-3 min-h-[44px] flex items-center justify-center text-gray-600 dark:text-zinc-400 text-callout">
+      <span class={`px-4 py-3 min-h-[44px] flex items-center justify-center text-gray-600 dark:text-zinc-400 text-callout${archivedText}`}>
         {d.totalPrepared}
       </span>
     </td>
     <td>
-      <span class="px-4 py-3 min-h-[44px] flex items-center justify-end whitespace-nowrap">
+      <span class={`px-4 py-3 min-h-[44px] flex items-center justify-end whitespace-nowrap${archivedText}`}>
         {d.totalRevenue > 0 ? (
           <span class="text-gray-900 dark:text-zinc-100 text-callout">{formatCurrency(d.totalRevenue)}</span>
         ) : (
@@ -374,7 +411,7 @@ export const DeliveryRow: FC<{ d: Delivery; showArchived: boolean; hideStore?: b
       </span>
     </td>
     <td>
-      <span class="px-4 py-3 min-h-[44px] flex items-center justify-end whitespace-nowrap">
+      <span class={`px-4 py-3 min-h-[44px] flex items-center justify-end whitespace-nowrap${archivedText}`}>
         {d.totalCogs > 0 ? (
           <span class="text-gray-600 dark:text-zinc-400 text-callout">{formatCurrency(d.totalCogs)}</span>
         ) : (
@@ -383,7 +420,7 @@ export const DeliveryRow: FC<{ d: Delivery; showArchived: boolean; hideStore?: b
       </span>
     </td>
     <td>
-      <span class="px-4 py-3 min-h-[44px] flex items-center justify-end whitespace-nowrap">
+      <span class={`px-4 py-3 min-h-[44px] flex items-center justify-end whitespace-nowrap${archivedText}`}>
         {d.grossProfit > 0 ? (
           <span class="text-green-600 dark:text-green-400 text-callout">{formatCurrency(d.grossProfit)}</span>
         ) : d.grossProfit < 0 ? (
@@ -393,31 +430,18 @@ export const DeliveryRow: FC<{ d: Delivery; showArchived: boolean; hideStore?: b
         )}
       </span>
     </td>
-    {showArchived && (
-      <td>
-        <span class="px-4 py-3 min-h-[44px] flex items-center justify-center">
-          <button
-            type="button"
-            onclick="event.stopPropagation();"
-            hx-post={`/deliveries/${d.id}/restore`}
-            hx-target="#deliveries-card"
-            hx-swap="outerHTML"
-            class="text-button-sm text-pink-500 dark:text-pink-400 hover:text-pink-600 dark:hover:text-pink-300"
-          >
-            Restore
-          </button>
-        </span>
-      </td>
-    )}
-    {!showArchived && (
-      <td>
-        <span class="px-4 py-3 min-h-[44px] flex items-center justify-center" onclick="event.stopPropagation();">
-          <HoldArchiveButton url={`/deliveries/${d.id}`} target="#deliveries-card" />
-        </span>
-      </td>
-    )}
+    <td>
+      <span class="px-4 py-3 min-h-[44px] flex items-center justify-center" onclick="event.stopPropagation();">
+        {isArchived ? (
+          <UnarchiveDeliveryButton url={`/deliveries/${d.id}/restore`} target="#deliveries-card" />
+        ) : (
+          <ArchiveDeliveryButton url={`/deliveries/${d.id}`} target="#deliveries-card" />
+        )}
+      </span>
+    </td>
   </tr>
-)
+  )
+}
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Table body — pure pixel-parity port of web-b's list / byStore tbody content
@@ -637,7 +661,7 @@ export const DeliveriesCard: FC<DeliveriesPageProps & { allDeliveries: Delivery[
     view: view === 'byStore' ? 'by-store' : null,
     sort: sortColumn !== 'id' || sortDirection !== 'desc' ? sortColumn : null,
     dir: sortColumn !== 'id' || sortDirection !== 'desc' ? sortDirection : null,
-    archived: showArchived ? '1' : null,
+    archived: null,
     stores: selectedStores.length ? selectedStores.join(',') : null,
     dateFrom: dateFrom || null,
     dateTo: dateTo || null,
@@ -668,20 +692,8 @@ export const DeliveriesCard: FC<DeliveriesPageProps & { allDeliveries: Delivery[
           </div>
           <div class="flex items-center gap-2 flex-wrap">
             <a
-              href={`/deliveries${buildQuery({ archived: showArchived ? null : '1' }, baseQuery)}`}
-              class={`px-5 py-2.5 border rounded-full text-button transition-all flex items-center gap-2 ${
-                showArchived
-                  ? 'bg-gray-900 border-gray-900 text-white hover:bg-gray-800 dark:bg-zinc-100 dark:border-zinc-100 dark:text-zinc-900 dark:hover:bg-zinc-200'
-                  : 'bg-white border-gray-200 text-gray-700 hover:bg-[#fafafa] dark:bg-[#0a0a0a] dark:border-[#262626] dark:text-zinc-300 dark:hover:bg-[#171717]'
-              }`}
-            >
-              <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 8h14M5 8a2 2 0 110-4h14a2 2 0 110 4M5 8v10a2 2 0 002 2h10a2 2 0 002-2V8m-9 4h4" />
-              </svg>
-              Archived
-            </a>
-            <a
               href={`/deliveries${buildQuery({ openFilter: openFilter === 'add' ? null : 'add' }, baseQuery)}`}
+              onclick="var p=document.getElementById('add-store-panel'); if(p){event.preventDefault(); p.classList.toggle('hidden'); var i=document.getElementById('add-store-name'); if(i && !p.classList.contains('hidden')) i.focus();}"
               class="animated-border px-5 py-2.5 text-white rounded-full text-button transition-all flex items-center gap-2"
             >
               <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -951,7 +963,7 @@ export const DeliveriesCard: FC<DeliveriesPageProps & { allDeliveries: Delivery[
                 <SortableHeader label="Revenue" column="totalRevenue" currentColumn={sortColumn} direction={sortDirection} baseQuery={baseQuery} class="w-12 text-right" />
                 <SortableHeader label="COGS" column="totalCogs" currentColumn={sortColumn} direction={sortDirection} baseQuery={baseQuery} class="w-10 text-right" />
                 <SortableHeader label="Profit" column="grossProfit" currentColumn={sortColumn} direction={sortDirection} baseQuery={baseQuery} class="w-12 text-right" />
-                <th class="w-20"><span class="px-2 py-3 text-caption uppercase tracking-[0.08em] text-gray-400 dark:text-zinc-500"></span></th>
+                <th class="w-32"><span class="px-2 py-3 text-caption uppercase tracking-[0.08em] text-gray-400 dark:text-zinc-500"></span></th>
               </tr>
             </thead>
             <DeliveriesTableBody

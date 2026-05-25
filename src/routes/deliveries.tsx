@@ -4,6 +4,25 @@ import { DeliveriesPage, DeliveriesCard, DeliveryRow, type Delivery, type SortCo
 
 export const deliveriesRoutes = new Hono()
 
+function sortByRecentDate(a: Delivery, b: Delivery): number {
+  const aTime = new Date((a.dropoffDate || a.datePrepared) + 'T00:00:00').getTime()
+  const bTime = new Date((b.dropoffDate || b.datePrepared) + 'T00:00:00').getTime()
+  return bTime - aTime
+}
+
+async function loadDeliveries(_showArchivedOnly: boolean): Promise<{ deliveries: Delivery[]; allDeliveries: Delivery[] }> {
+  const [active, archived] = await Promise.all([
+    api.get<Delivery[]>('/deliveries'),
+    api.get<Delivery[]>('/deliveries?archived=true'),
+  ])
+  const all = new Map<number, Delivery>()
+  for (const d of active) all.set(d.id, d)
+  for (const d of archived) all.set(d.id, d)
+  const allDeliveries = [...all.values()].sort(sortByRecentDate)
+  const deliveries = allDeliveries
+  return { deliveries, allDeliveries }
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // Helpers
 // ─────────────────────────────────────────────────────────────────────────────
@@ -60,7 +79,7 @@ function readQuery(c: { req: { queries: (k: string) => string[] | undefined; que
     view: parseView(q('view')),
     sortColumn: parseSort(q('sort')),
     sortDirection: parseDir(q('dir')),
-    showArchived: q('archived') === '1',
+    showArchived: false,
     selectedStores: parseStores(c),
     dateFrom: q('dateFrom') || null,
     dateTo: q('dateTo') || null,
@@ -82,8 +101,7 @@ const html = (jsx: { toString(): string }) => '<!DOCTYPE html>' + jsx.toString()
 
 deliveriesRoutes.get('/deliveries', async (c) => {
   const state = readQuery(c)
-  const url = state.showArchived ? '/deliveries?archived=true' : '/deliveries'
-  const deliveries = await api.get<Delivery[]>(url)
+  const { deliveries } = await loadDeliveries(state.showArchived)
   return c.html(html(<DeliveriesPage deliveries={deliveries} {...state} />))
 })
 
@@ -100,8 +118,8 @@ deliveriesRoutes.post('/deliveries', async (c) => {
     dropoffDate: form.dropoffDate ? String(form.dropoffDate) : null,
   })
   const state = readQuery(c)
-  const deliveries = await api.get<Delivery[]>(state.showArchived ? '/deliveries?archived=true' : '/deliveries')
-  return c.html(<DeliveriesCard deliveries={deliveries} allDeliveries={deliveries} {...state} openFilter={null} view={state.view} />)
+  const { deliveries, allDeliveries } = await loadDeliveries(state.showArchived)
+  return c.html(<DeliveriesCard deliveries={deliveries} allDeliveries={allDeliveries} {...state} openFilter={null} view={state.view} />)
 })
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -123,23 +141,22 @@ deliveriesRoutes.patch('/deliveries/:id', async (c) => {
   await api.patch(`/deliveries/${id}`, body)
   // Return refreshed row from the current filtered list
   const state = readQuery(c)
-  const deliveries = await api.get<Delivery[]>(state.showArchived ? '/deliveries?archived=true' : '/deliveries')
+  const { deliveries } = await loadDeliveries(state.showArchived)
   const updated = deliveries.find((d) => d.id === id)
   if (!updated) return c.body(null, 204)
   return c.html(<DeliveryRow d={updated} showArchived={state.showArchived} />)
 })
 
 // ─────────────────────────────────────────────────────────────────────────────
-// DELETE /deliveries/:id — soft archive, return refreshed card so the row vanishes
+// DELETE /deliveries/:id — soft archive, return refreshed card so row stays marked archived.
 // ─────────────────────────────────────────────────────────────────────────────
 
 deliveriesRoutes.delete('/deliveries/:id', async (c) => {
   const id = Number(c.req.param('id'))
-  const hard = c.req.query('hard') === 'true'
-  await api.del(`/deliveries/${id}${hard ? '?hard=true' : ''}`)
+  await api.del(`/deliveries/${id}`)
   const state = readQuery(c)
-  const deliveries = await api.get<Delivery[]>(state.showArchived ? '/deliveries?archived=true' : '/deliveries')
-  return c.html(<DeliveriesCard deliveries={deliveries} allDeliveries={deliveries} {...state} openFilter={null} view={state.view} />)
+  const { deliveries, allDeliveries } = await loadDeliveries(state.showArchived)
+  return c.html(<DeliveriesCard deliveries={deliveries} allDeliveries={allDeliveries} {...state} openFilter={null} view={state.view} />)
 })
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -150,8 +167,8 @@ deliveriesRoutes.post('/deliveries/:id/restore', async (c) => {
   const id = Number(c.req.param('id'))
   await api.patch(`/deliveries/${id}`, { deletedAt: null })
   const state = readQuery(c)
-  const deliveries = await api.get<Delivery[]>(state.showArchived ? '/deliveries?archived=true' : '/deliveries')
-  return c.html(<DeliveriesCard deliveries={deliveries} allDeliveries={deliveries} {...state} openFilter={null} view={state.view} />)
+  const { deliveries, allDeliveries } = await loadDeliveries(state.showArchived)
+  return c.html(<DeliveriesCard deliveries={deliveries} allDeliveries={allDeliveries} {...state} openFilter={null} view={state.view} />)
 })
 
 export default deliveriesRoutes

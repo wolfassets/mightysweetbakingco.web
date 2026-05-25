@@ -22,6 +22,7 @@ import {
   FlavorNameEdit,
   FlavorsCard,
   FlavorsView,
+  PriceTierRow,
   PriceTierCostCell,
   PriceTierCostEdit,
   PriceTierNameCell,
@@ -64,10 +65,8 @@ async function htmlPage(c: Context, jsx: HtmlOrPromise): Promise<Response> {
 
 // ───── Whole page ─────
 flavorsRoutes.get('/flavors', async (c) => {
-  const showArchived = c.req.query('archived') === '1'
   const { flavors, prices } = await loadAll()
-  const visible = showArchived ? flavors : flavors.filter((f) => f.isActive)
-  return htmlPage(c, <FlavorsView flavors={visible} prices={prices} showArchived={showArchived} />)
+  return htmlPage(c, <FlavorsView flavors={flavors} prices={prices} />)
 })
 
 // ───── Flavor mutations ─────
@@ -76,7 +75,7 @@ flavorsRoutes.post('/flavors', async (c) => {
   const { flavors, prices } = await loadAll()
   return c.html(
     <FlavorsCard
-      flavors={flavors.filter((f) => f.isActive)}
+      flavors={flavors}
       prices={prices}
       newFlavorId={created?.id}
     />,
@@ -85,9 +84,17 @@ flavorsRoutes.post('/flavors', async (c) => {
 
 flavorsRoutes.delete('/flavors/:id', async (c) => {
   const id = Number(c.req.param('id'))
-  await api.del(`/flavors/${id}`)
+  const hard = c.req.query('hard') === 'true'
+  await api.del(`/flavors/${id}${hard ? '?hard=true' : ''}`)
   const { flavors, prices } = await loadAll()
-  return c.html(<FlavorsCard flavors={flavors.filter((f) => f.isActive)} prices={prices} />)
+  return c.html(<FlavorsCard flavors={flavors} prices={prices} />)
+})
+
+flavorsRoutes.post('/flavors/:id/restore', async (c) => {
+  const id = Number(c.req.param('id'))
+  await api.patch<Flavor>(`/flavors/${id}`, { isActive: true })
+  const { flavors, prices } = await loadAll()
+  return c.html(<FlavorsCard flavors={flavors} prices={prices} />)
 })
 
 // ───── Flavor cell (name) ─────
@@ -126,7 +133,7 @@ flavorsRoutes.get('/flavors/:id/add-tier', async (c) => {
   const { flavors, prices } = await loadAll()
   const f = flavors.find((x) => x.id === id)
   if (!f) return c.notFound()
-  const ordered = sortFlavors(flavors.filter((x) => x.isActive))
+  const ordered = sortFlavors(flavors)
   const idx = ordered.findIndex((x) => x.id === id)
   return c.html(
     <FlavorBlock
@@ -134,7 +141,7 @@ flavorsRoutes.get('/flavors/:id/add-tier', async (c) => {
       prices={prices}
       index={idx >= 0 ? idx : 0}
       total={ordered.length}
-      addingTier
+      addingTier={f.isActive !== false}
     />,
   )
 })
@@ -144,7 +151,7 @@ flavorsRoutes.get('/flavors/:id/cancel-add-tier', async (c) => {
   const { flavors, prices } = await loadAll()
   const f = flavors.find((x) => x.id === id)
   if (!f) return c.notFound()
-  const ordered = sortFlavors(flavors.filter((x) => x.isActive))
+  const ordered = sortFlavors(flavors)
   const idx = ordered.findIndex((x) => x.id === id)
   return c.html(
     <FlavorBlock
@@ -160,18 +167,40 @@ flavorsRoutes.get('/flavors/:id/cancel-add-tier', async (c) => {
 flavorsRoutes.post('/flavor-prices', async (c) => {
   const form = await c.req.parseBody()
   const flavorId = Number(form.flavorId ?? c.req.query('flavorId') ?? 0)
-  const tierName = String(form.tierName ?? '').trim() || 'New Rate'
-  const price = parseDollars(form.price) ?? 0
+  const rawTierName = String(form.tierName ?? '').trim()
+  const rawPrice = String(form.price ?? '').trim()
+  const rawCost = String(form.cost ?? '').trim()
+  const tierName = rawTierName || 'New Rate'
+  const price = parseDollars(rawPrice)
   const cost = parseDollars(form.cost)
-  if (flavorId > 0) {
+  const beforeCreate = await loadAll()
+  const targetFlavor = beforeCreate.flavors.find((x) => x.id === flavorId)
+  const hasInput = rawTierName !== '' || rawPrice !== '' || rawCost !== ''
+  if (!hasInput) {
+    const ordered = sortFlavors(beforeCreate.flavors)
+    const f = beforeCreate.flavors.find((x) => x.id === flavorId)
+    if (!f) return c.html(<FlavorsCard flavors={beforeCreate.flavors} prices={beforeCreate.prices} />)
+    const idx = ordered.findIndex((x) => x.id === flavorId)
+    return c.html(
+      <FlavorBlock flavor={f} prices={beforeCreate.prices} index={idx >= 0 ? idx : 0} total={ordered.length} />,
+    )
+  }
+  if (flavorId > 0 && targetFlavor && targetFlavor.isActive !== false && price != null && price > 0) {
     await api.post<FlavorPrice>('/flavor-prices', { flavorId, tierName, price, cost })
   }
   const { flavors, prices } = await loadAll()
   const f = flavors.find((x) => x.id === flavorId)
   if (!f) {
-    return c.html(<FlavorsCard flavors={flavors.filter((x) => x.isActive)} prices={prices} />)
+    return c.html(<FlavorsCard flavors={flavors} prices={prices} />)
   }
-  const ordered = sortFlavors(flavors.filter((x) => x.isActive))
+  if (f.isActive === false) {
+    const ordered = sortFlavors(flavors)
+    const idx = ordered.findIndex((x) => x.id === flavorId)
+    return c.html(
+      <FlavorBlock flavor={f} prices={prices} index={idx >= 0 ? idx : 0} total={ordered.length} />,
+    )
+  }
+  const ordered = sortFlavors(flavors)
   const idx = ordered.findIndex((x) => x.id === flavorId)
   return c.html(
     <FlavorBlock flavor={f} prices={prices} index={idx >= 0 ? idx : 0} total={ordered.length} />,
@@ -180,10 +209,40 @@ flavorsRoutes.post('/flavor-prices', async (c) => {
 
 flavorsRoutes.delete('/flavor-prices/:id', async (c) => {
   const id = Number(c.req.param('id'))
-  await api.del(`/flavor-prices/${id}`)
-  // Removing the row by swapping it with an empty fragment so the table reflow
-  // doesn't reload the whole card.
-  return c.body('', 200)
+  const hard = c.req.query('hard') === 'true'
+  await api.del(`/flavor-prices/${id}${hard ? '?hard=true' : ''}`)
+  if (hard) return c.body('', 200)
+  const { flavors, prices } = await loadAll()
+  const updated = prices.find((p) => p.id === id)
+  if (!updated) return c.body('', 200)
+  const parent = flavors.find((f) => f.id === updated.flavorId)
+  const tiers = pricesFor(updated.flavorId, prices)
+  const index = tiers.findIndex((p) => p.id === id)
+  return c.html(
+    <PriceTierRow
+      price={updated}
+      index={index >= 0 ? index : 0}
+      disabled={parent?.isActive === false}
+    />,
+  )
+})
+
+flavorsRoutes.post('/flavor-prices/:id/restore', async (c) => {
+  const id = Number(c.req.param('id'))
+  await api.patch<FlavorPrice>(`/flavor-prices/${id}`, { isActive: true })
+  const { flavors, prices } = await loadAll()
+  const updated = prices.find((p) => p.id === id)
+  if (!updated) return c.body('', 200)
+  const parent = flavors.find((f) => f.id === updated.flavorId)
+  const tiers = pricesFor(updated.flavorId, prices)
+  const index = tiers.findIndex((p) => p.id === id)
+  return c.html(
+    <PriceTierRow
+      price={updated}
+      index={index >= 0 ? index : 0}
+      disabled={parent?.isActive === false}
+    />,
+  )
 })
 
 // ───── Price-cell handlers (tierName / price / cost) ─────
