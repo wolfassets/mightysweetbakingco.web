@@ -290,8 +290,8 @@ export const EventItemRow: FC<{
       <td>
         <div class="w-full px-4 py-3 min-h-[44px] flex items-center justify-center gap-1.5 group/edit">
           <svg
-            class="text-gray-300 dark:text-zinc-700 group-hover/edit:text-gray-400 dark:group-hover/edit:text-zinc-500 shrink-0 transition-colors"
-            style="width:1em;height:1em"
+            class="text-black dark:text-zinc-100 shrink-0"
+            style="width:0.9em;height:0.9em"
             fill="none"
             stroke="currentColor"
             viewBox="0 0 24 24"
@@ -671,8 +671,8 @@ export const EventDetailPage: FC<{
               <h3 class="text-headline text-gray-900 dark:text-zinc-100 mb-0.5">Location</h3>
               <div class="flex items-center gap-1.5 group/edit">
                 <svg
-                  class="text-gray-300 dark:text-zinc-700 group-hover/edit:text-gray-400 dark:group-hover/edit:text-zinc-500 shrink-0 transition-colors"
-                  style="width:1em;height:1em"
+                  class="text-black dark:text-zinc-100 shrink-0"
+                  style="width:0.9em;height:0.9em"
                   fill="none"
                   stroke="currentColor"
                   viewBox="0 0 24 24"
@@ -700,8 +700,8 @@ export const EventDetailPage: FC<{
                       <span class="text-headline text-gray-500 dark:text-zinc-400">Date</span>
                       <div class="flex items-center gap-1.5 group/edit">
                         <svg
-                          class="text-gray-300 dark:text-zinc-700 group-hover/edit:text-gray-400 dark:group-hover/edit:text-zinc-500 shrink-0 transition-colors"
-                          style="width:1em;height:1em"
+                          class="text-black dark:text-zinc-100 shrink-0"
+                          style="width:0.9em;height:0.9em"
                           fill="none"
                           stroke="currentColor"
                           viewBox="0 0 24 24"
@@ -724,8 +724,8 @@ export const EventDetailPage: FC<{
                       <span class="text-headline text-gray-500 dark:text-zinc-400">Fee</span>
                       <div class="flex items-center gap-1.5 group/edit">
                         <svg
-                          class="text-gray-300 dark:text-zinc-700 group-hover/edit:text-gray-400 dark:group-hover/edit:text-zinc-500 shrink-0 transition-colors"
-                          style="width:1em;height:1em"
+                          class="text-black dark:text-zinc-100 shrink-0"
+                          style="width:0.9em;height:0.9em"
                           fill="none"
                           stroke="currentColor"
                           viewBox="0 0 24 24"

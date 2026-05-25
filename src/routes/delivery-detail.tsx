@@ -242,6 +242,45 @@ async function renderItemsContainer(deliveryId: number, c: Context): Promise<Res
   )
 }
 
+// POST /delivery-items/suggested-set — copy all rows from a previous delivery.
+deliveryDetailRoutes.post('/delivery-items/suggested-set', async (c) => {
+  const form = await c.req.parseBody()
+  const deliveryId = Number(form.deliveryId)
+  const sourceDeliveryId = Number(form.sourceDeliveryId)
+  if (!deliveryId || !sourceDeliveryId || deliveryId === sourceDeliveryId) {
+    return renderItemsContainer(deliveryId, c)
+  }
+
+  const allItems = await api.get<DeliveryItem[]>('/delivery-items')
+  const currentItems = allItems.filter((item) => item.deliveryId === deliveryId)
+  const sourceItems = allItems.filter((item) => item.deliveryId === sourceDeliveryId)
+  if (currentItems.length > 0 || sourceItems.length === 0) {
+    return renderItemsContainer(deliveryId, c)
+  }
+
+  for (const item of sourceItems) {
+    const prepared = item.prepared ?? 0
+    const unitPrice = item.unitPrice ?? null
+    const unitCost = item.unitCost ?? null
+    const revenue = unitPrice == null ? item.revenue : prepared * unitPrice
+    const cogs = unitCost == null ? item.cogs : prepared * unitCost
+    await api.post<DeliveryItem>('/delivery-items', {
+      deliveryId,
+      flavorName: item.flavorName,
+      prepared,
+      unsold: 0,
+      unitPrice,
+      unitCost,
+      revenue,
+      cogs,
+      profit: revenue - cogs,
+      rateId: item.rateId ?? null,
+    })
+  }
+
+  return renderItemsContainer(deliveryId, c)
+})
+
 // POST /delivery-items — create from modal form
 deliveryDetailRoutes.post('/delivery-items', async (c) => {
   const form = await c.req.parseBody()

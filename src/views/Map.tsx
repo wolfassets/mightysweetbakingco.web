@@ -98,9 +98,22 @@ const mapInitScript = `
   var detailEl = document.getElementById('map-detail-card');
   if(!tokenEl || !dataEl || !container) return;
 
+  var loadingEl = document.getElementById('map-loading');
+  function hideLoading(){
+    if(!loadingEl) return;
+    loadingEl.style.opacity = '0';
+    setTimeout(function(){ if(loadingEl) loadingEl.style.display = 'none'; }, 500);
+  }
+  // Reveal the map (fade it in) once it's been panned to the right region.
+  function revealMap(){
+    container.style.opacity = '1';
+    hideLoading();
+  }
+
   var token = tokenEl.textContent.trim();
   if(!token){
     container.innerHTML = '<div class="absolute inset-0 flex items-center justify-center text-gray-400 dark:text-zinc-500 text-callout">MapKit token not configured. Set MAPKIT_TOKEN in apps/web-c/.env.</div>';
+    container.style.opacity = '1'; hideLoading();
     return;
   }
 
@@ -108,6 +121,7 @@ const mapInitScript = `
   try { markers = JSON.parse(dataEl.textContent); } catch(e){ markers = []; }
   if(!markers.length){
     container.innerHTML = '<div class="absolute inset-0 flex items-center justify-center text-gray-400 dark:text-zinc-500 text-callout">No events or deliveries with a location yet.</div>';
+    container.style.opacity = '1'; hideLoading();
     return;
   }
 
@@ -198,6 +212,17 @@ const mapInitScript = `
       showsMapTypeControl: true,
     });
 
+    // Seed the camera on the Capital Region (Albany/Schenectady, NY) where
+    // nearly all markers live. The map is still hidden behind the loading
+    // overlay at this point — this just guarantees the first painted frame is
+    // the right neighborhood, not the whole globe, before we fit to the bbox.
+    try {
+      map.region = new window.mapkit.CoordinateRegion(
+        new window.mapkit.Coordinate(42.78, -73.84),
+        new window.mapkit.CoordinateSpan(0.9, 0.9)
+      );
+    } catch(e){}
+
     // React to dark-mode flips
     var obs = new MutationObserver(function(){ map.colorScheme = colorScheme(); });
     obs.observe(document.documentElement, { attributes: true, attributeFilter: ['class'] });
@@ -230,6 +255,12 @@ const mapInitScript = `
                 subtitle: m.subtitle,
                 color: color,
                 glyphColor: '#ffffff',
+                // Cluster nearby pins (declutters the tight Albany area) and
+                // only reveal the text labels when there's room — i.e. as you
+                // zoom in. Adaptive lets MapKit collide-test the labels.
+                clusteringIdentifier: m.kind,
+                titleVisibility: window.mapkit.FeatureVisibility.Adaptive,
+                subtitleVisibility: window.mapkit.FeatureVisibility.Adaptive,
               });
             } catch(e){ return; }
 
@@ -266,11 +297,20 @@ const mapInitScript = `
           );
           map.region = region;
           userRegion = region;
+          // Region is now fitted to all markers — let the tiles settle a beat,
+          // then fade the (already panned-in) map in and drop the overlay.
+          setTimeout(revealMap, 350);
+        } else if(completed === markers.length){
+          // Everything geocoded but nothing plottable — still reveal the map.
+          revealMap();
         }
       });
     });
+    // Safety net: if geocoding hangs, reveal the map anyway after 8s.
+    setTimeout(revealMap, 8000);
   }).catch(function(){
     container.innerHTML = '<div class="absolute inset-0 flex items-center justify-center text-gray-400 dark:text-zinc-500 text-callout">Failed to load MapKit.</div>';
+    container.style.opacity = '1'; hideLoading();
   });
 })();
 `
@@ -319,7 +359,19 @@ export const MapPage: FC<MapPageProps> = ({ events, deliveries, mapkitToken }) =
             class="relative w-full rounded-2xl overflow-hidden bg-gray-50 dark:bg-[#171717]"
             style="height: calc(100vh - 220px); min-height: 480px;"
           >
-            <div id="map" class="absolute inset-0" />
+            <div id="map" class="absolute inset-0 opacity-0 transition-opacity duration-500" />
+            {/* Loading overlay — covers the map until it's geocoded + panned in,
+                so the user never sees the raw world map snapping into place. */}
+            <div
+              id="map-loading"
+              class="absolute inset-0 flex flex-col items-center justify-center gap-3 bg-gray-50 dark:bg-[#171717] transition-opacity duration-500"
+            >
+              <svg class="w-8 h-8 text-pink-500 animate-spin" fill="none" viewBox="0 0 24 24">
+                <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4" />
+                <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
+              </svg>
+              <p class="text-callout text-gray-400 dark:text-zinc-500 animate-pulse">Loading map…</p>
+            </div>
             {/* Floating detail card (hidden until a marker is clicked) */}
             <div
               id="map-detail-card"

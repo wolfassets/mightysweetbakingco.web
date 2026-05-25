@@ -38,7 +38,7 @@ export const Button: FC<
 }
 
 // Hold-to-archive button (vanilla JS)
-export const HoldArchiveButton: FC<{ url: string; target?: string }> = ({ url, target = 'closest tr' }) => {
+export const HoldArchiveButton: FC<{ url: string; target?: string; class?: string }> = ({ url, target = 'closest tr', class: cls }) => {
   const handler = `(function(btn){
     if(btn.dataset.bound)return; btn.dataset.bound='1';
     var label=btn.querySelector('span'), interval=null, ready=false, progress=0;
@@ -77,8 +77,8 @@ export const HoldArchiveButton: FC<{ url: string; target?: string }> = ({ url, t
     <button
       type="button"
       onmouseover={handler}
-      class="relative overflow-hidden rounded-full w-20 py-1 text-button-sm transition-all select-none text-center"
-      style="background: rgba(254,242,242,1); color: #ef4444; border: 1px solid #fecaca;"
+      class={cls ?? 'relative overflow-hidden rounded-full w-20 py-1 text-button-sm transition-all select-none text-center'}
+      style={cls ? undefined : 'background: rgba(254,242,242,1); color: #ef4444; border: 1px solid #fecaca;'}
       hx-delete={url}
       hx-trigger="archive"
       hx-target={target}

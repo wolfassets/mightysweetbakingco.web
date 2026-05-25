@@ -125,6 +125,7 @@ export function formatAbsolute(iso: string): string {
     year: 'numeric',
     hour: 'numeric',
     minute: '2-digit',
+    second: '2-digit',
   })
 }
 
@@ -136,22 +137,6 @@ function dayHeading(iso: string): string {
     day: 'numeric',
     year: 'numeric',
   })
-}
-
-function formatValue(v: unknown): string {
-  if (v == null) return '—'
-  if (typeof v === 'string') {
-    if (v.length > 80) return v.slice(0, 80) + '…'
-    return v
-  }
-  if (typeof v === 'number') return String(v)
-  if (typeof v === 'boolean') return v ? 'true' : 'false'
-  try {
-    const s = JSON.stringify(v)
-    return s.length > 80 ? s.slice(0, 80) + '…' : s
-  } catch {
-    return String(v).slice(0, 80)
-  }
 }
 
 function safeParse<T = unknown>(s: string | null): T | null {
@@ -220,153 +205,46 @@ export const AuditEntry: FC<{ r: AuditRow }> = ({ r }) => {
       'bg-gray-100 text-gray-700 border-gray-200 dark:bg-[#1f1f1f] dark:text-zinc-300 dark:border-[#262626]',
   }
   const fields: string[] = r.changedFields ? safeParse<string[]>(r.changedFields) || [] : []
-  const before = safeParse<Record<string, unknown>>(r.beforeJson)
-  const after = safeParse<Record<string, unknown>>(r.afterJson)
-  const hasDetail = !!(before || after)
   const entityLabel = ENTITY_LABELS[r.entityType] ?? r.entityType
+  const ip = ipBadge(r.ipAddress)
 
   return (
     <div
-      class="bg-white dark:bg-[#0d0d0d] border border-gray-200 dark:border-[#1f1f1f] rounded-2xl fade-in"
+      class="flex items-center gap-3 px-4 py-1.5 rounded-xl hover:bg-gray-50 dark:hover:bg-[#171717] transition-colors fade-in"
       data-audit-id={String(r.id)}
     >
-      {hasDetail ? (
-        <details class="group">
-          <summary class="w-full flex items-center gap-3 px-4 py-3 text-left cursor-pointer hover:bg-gray-50 dark:hover:bg-[#171717] transition-colors rounded-2xl list-none [&::-webkit-details-marker]:hidden">
-            <span class="flex items-center gap-1.5 text-caption text-gray-500 dark:text-zinc-400 whitespace-nowrap">
-              <span class="text-callout">{ipBadge(r.ipAddress).glyph}</span>
-              {ipBadge(r.ipAddress).city && <span>{ipBadge(r.ipAddress).city}</span>}
-              {ipBadge(r.ipAddress).ip && (
-                <span class="text-caption-mono text-gray-400 dark:text-zinc-500">{ipBadge(r.ipAddress).ip}</span>
-              )}
-            </span>
-            <span class="text-caption text-gray-400 dark:text-zinc-600 whitespace-nowrap">·</span>
-            <span class="text-caption text-gray-500 dark:text-zinc-400 whitespace-nowrap">
-              {entityLabel}
-            </span>
-            <span
-              class={`text-button-sm px-2.5 py-0.5 rounded-full border whitespace-nowrap ${badge.className}`}
-            >
-              {badge.label}
-            </span>
-            <span class="text-callout text-gray-900 dark:text-zinc-100 truncate">
-              {r.entityLabel || `#${r.entityId}`}
-            </span>
-            {r.action === 'update' && fields.length > 0 && (
-              <span class="text-caption text-gray-500 dark:text-zinc-400 truncate">
-                {fields.length === 1
-                  ? `changed ${fields[0]}`
-                  : `changed ${fields.length} fields`}
-              </span>
-            )}
-            <span
-              class="ml-auto text-caption text-gray-400 dark:text-zinc-500 whitespace-nowrap"
-              title={formatAbsolute(r.createdAt)}
-            >
-              {formatRelative(r.createdAt)}
-            </span>
-            <svg
-              class="w-4 h-4 text-gray-400 dark:text-zinc-500 transition-transform group-open:rotate-180"
-              fill="none"
-              stroke="currentColor"
-              viewBox="0 0 24 24"
-            >
-              <path
-                stroke-linecap="round"
-                stroke-linejoin="round"
-                stroke-width="2"
-                d="M19 9l-7 7-7-7"
-              />
-            </svg>
-          </summary>
-          <div class="px-4 pb-4 border-t border-gray-100 dark:border-[#1f1f1f] pt-3">
-            <AuditDetail r={r} fields={fields} before={before} after={after} />
-          </div>
-        </details>
-      ) : (
-        <div class="w-full flex items-center gap-3 px-4 py-3 text-left rounded-2xl">
-          <span class="flex items-center gap-1.5 text-caption text-gray-500 dark:text-zinc-400 whitespace-nowrap">
-            <span class="text-callout">{ipBadge(r.ipAddress).glyph}</span>
-            <span>{ipBadge(r.ipAddress).text}</span>
-          </span>
-          <span class="text-caption text-gray-400 dark:text-zinc-600 whitespace-nowrap">·</span>
-          <span class="text-caption text-gray-500 dark:text-zinc-400 whitespace-nowrap">
-            {entityLabel}
-          </span>
-          <span
-            class={`text-button-sm px-2.5 py-0.5 rounded-full border whitespace-nowrap ${badge.className}`}
-          >
-            {badge.label}
-          </span>
-          <span class="text-callout text-gray-900 dark:text-zinc-100 truncate">
-            {r.entityLabel || `#${r.entityId}`}
-          </span>
-          <span
-            class="ml-auto text-caption text-gray-400 dark:text-zinc-500 whitespace-nowrap"
-            title={formatAbsolute(r.createdAt)}
-          >
-            {formatRelative(r.createdAt)}
-          </span>
-        </div>
+      <span class="flex items-center gap-1.5 text-callout text-gray-500 dark:text-zinc-400 whitespace-nowrap">
+        <span class="text-callout">{ip.glyph}</span>
+        {ip.city && <span>{ip.city}</span>}
+        {ip.ip && <span class="text-callout text-gray-400 dark:text-zinc-500">{ip.ip}</span>}
+      </span>
+      <span class="text-callout text-gray-400 dark:text-zinc-600 whitespace-nowrap">·</span>
+      <span class="text-callout text-gray-500 dark:text-zinc-400 whitespace-nowrap">{entityLabel}</span>
+      <span
+        class={`text-button-sm px-2.5 py-0.5 rounded-full border whitespace-nowrap ${badge.className}`}
+      >
+        {badge.label}
+      </span>
+      <span class="text-callout text-gray-900 dark:text-zinc-100 truncate">
+        {r.entityLabel || `#${r.entityId}`}
+      </span>
+      {r.action === 'update' && fields.length > 0 && (
+        <span class="text-callout text-gray-500 dark:text-zinc-400 truncate">
+          {fields.length === 1 ? `changed ${fields[0]}` : `changed ${fields.length} fields`}
+        </span>
       )}
+      <span class="ml-auto text-callout text-gray-400 dark:text-zinc-500 whitespace-nowrap">
+        {formatAbsolute(r.createdAt)}
+      </span>
     </div>
   )
-}
-
-const AuditDetail: FC<{
-  r: AuditRow
-  fields: string[]
-  before: Record<string, unknown> | null
-  after: Record<string, unknown> | null
-}> = ({ r, fields, before, after }) => {
-  if (r.action === 'update' && fields.length > 0) {
-    return (
-      <div class="grid grid-cols-[120px_1fr_1fr] gap-x-4 gap-y-1">
-        <div class="text-caption text-gray-500 dark:text-zinc-400">Field</div>
-        <div class="text-caption text-gray-500 dark:text-zinc-400">Before</div>
-        <div class="text-caption text-gray-500 dark:text-zinc-400">After</div>
-        {fields.map((f) => (
-          <>
-            <div class="text-callout text-gray-700 dark:text-zinc-300">{f}</div>
-            <div
-              class="text-caption text-red-600 dark:text-red-400 truncate"
-              title={String(before?.[f] ?? '')}
-            >
-              {formatValue(before?.[f])}
-            </div>
-            <div
-              class="text-caption text-green-600 dark:text-green-400 truncate"
-              title={String(after?.[f] ?? '')}
-            >
-              {formatValue(after?.[f])}
-            </div>
-          </>
-        ))}
-      </div>
-    )
-  }
-  if (r.action === 'create' && after) {
-    return (
-      <pre class="text-subheadline text-gray-600 dark:text-zinc-400 overflow-x-auto whitespace-pre-wrap">
-        {JSON.stringify(after, null, 2)}
-      </pre>
-    )
-  }
-  if (r.action === 'delete' && before) {
-    return (
-      <pre class="text-subheadline text-gray-600 dark:text-zinc-400 overflow-x-auto whitespace-pre-wrap">
-        {JSON.stringify(before, null, 2)}
-      </pre>
-    )
-  }
-  return <p class="text-caption text-gray-400 dark:text-zinc-500">No changes recorded.</p>
 }
 
 // ───────────────────────── Day group ─────────────────────────
 const DayGroup: FC<{ day: string; items: AuditRow[] }> = ({ day, items }) => (
   <div class="day-group" data-day={day}>
     <h3 class="text-headline text-gray-900 dark:text-zinc-100 mb-3">{day}</h3>
-    <div class="space-y-2">
+    <div class="space-y-0.5">
       {items.map((row) => (
         <AuditEntry r={row} />
       ))}
@@ -537,104 +415,39 @@ export function renderAuditEntryHtml(r: AuditRow): string {
         'bg-gray-100 text-gray-700 border-gray-200 dark:bg-[#1f1f1f] dark:text-zinc-300 dark:border-[#262626]',
     } as ActionBadge)
   const fields: string[] = r.changedFields ? safeParse<string[]>(r.changedFields) || [] : []
-  const before = safeParse<Record<string, unknown>>(r.beforeJson)
-  const after = safeParse<Record<string, unknown>>(r.afterJson)
-  const hasDetail = !!(before || after)
   const entityLabel = ENTITY_LABELS[r.entityType] ?? r.entityType
   const displayLabel = r.entityLabel || `#${r.entityId}`
 
   const changedSummary =
     r.action === 'update' && fields.length > 0
-      ? `<span class="text-caption text-gray-500 dark:text-zinc-400 truncate">${
+      ? `<span class="text-callout text-gray-500 dark:text-zinc-400 truncate">${
           fields.length === 1
             ? `changed ${esc(fields[0])}`
             : `changed ${fields.length} fields`
         }</span>`
       : ''
 
-  const detailBody = (() => {
-    if (r.action === 'update' && fields.length > 0) {
-      const rows = fields
-        .map((f) => {
-          const bv = formatValue(before?.[f])
-          const av = formatValue(after?.[f])
-          return (
-            `<div class="text-callout text-gray-700 dark:text-zinc-300">${esc(f)}</div>` +
-            `<div class="text-caption text-red-600 dark:text-red-400 truncate" title="${esc(
-              String(before?.[f] ?? ''),
-            )}">${esc(bv)}</div>` +
-            `<div class="text-caption text-green-600 dark:text-green-400 truncate" title="${esc(
-              String(after?.[f] ?? ''),
-            )}">${esc(av)}</div>`
-          )
-        })
-        .join('')
-      return (
-        `<div class="grid grid-cols-[120px_1fr_1fr] gap-x-4 gap-y-1">` +
-        `<div class="text-caption text-gray-500 dark:text-zinc-400">Field</div>` +
-        `<div class="text-caption text-gray-500 dark:text-zinc-400">Before</div>` +
-        `<div class="text-caption text-gray-500 dark:text-zinc-400">After</div>` +
-        rows +
-        `</div>`
-      )
-    }
-    if (r.action === 'create' && after) {
-      return `<pre class="text-subheadline text-gray-600 dark:text-zinc-400 overflow-x-auto whitespace-pre-wrap">${esc(
-        JSON.stringify(after, null, 2),
-      )}</pre>`
-    }
-    if (r.action === 'delete' && before) {
-      return `<pre class="text-subheadline text-gray-600 dark:text-zinc-400 overflow-x-auto whitespace-pre-wrap">${esc(
-        JSON.stringify(before, null, 2),
-      )}</pre>`
-    }
-    return `<p class="text-caption text-gray-400 dark:text-zinc-500">No changes recorded.</p>`
-  })()
-
   const ip = ipBadge(r.ipAddress)
   const ipBlock =
-    `<span class="flex items-center gap-1.5 text-caption text-gray-500 dark:text-zinc-400 whitespace-nowrap">` +
+    `<span class="flex items-center gap-1.5 text-callout text-gray-500 dark:text-zinc-400 whitespace-nowrap">` +
     `<span class="text-callout">${ip.glyph}</span>` +
     (ip.city ? `<span>${esc(ip.city)}</span>` : '') +
-    (ip.ip ? `<span class="text-caption-mono text-gray-400 dark:text-zinc-500">${esc(ip.ip)}</span>` : '') +
+    (ip.ip ? `<span class="text-callout text-gray-400 dark:text-zinc-500">${esc(ip.ip)}</span>` : '') +
     `</span>` +
-    `<span class="text-caption text-gray-400 dark:text-zinc-600 whitespace-nowrap">·</span>`
+    `<span class="text-callout text-gray-400 dark:text-zinc-600 whitespace-nowrap">·</span>`
 
-  const summary =
-    `<summary class="w-full flex items-center gap-3 px-4 py-3 text-left cursor-pointer hover:bg-gray-50 dark:hover:bg-[#171717] transition-colors rounded-2xl list-none [&::-webkit-details-marker]:hidden">` +
+  return (
+    `<div class="flex items-center gap-3 px-4 py-1.5 rounded-xl hover:bg-gray-50 dark:hover:bg-[#171717] transition-colors fade-in" data-audit-id="${r.id}">` +
     ipBlock +
-    `<span class="text-caption text-gray-500 dark:text-zinc-400 whitespace-nowrap">${esc(entityLabel)}</span>` +
+    `<span class="text-callout text-gray-500 dark:text-zinc-400 whitespace-nowrap">${esc(entityLabel)}</span>` +
     `<span class="text-button-sm px-2.5 py-0.5 rounded-full border whitespace-nowrap ${badge.className}">${esc(
       badge.label,
     )}</span>` +
     `<span class="text-callout text-gray-900 dark:text-zinc-100 truncate">${esc(displayLabel)}</span>` +
     changedSummary +
-    `<span class="ml-auto text-caption text-gray-400 dark:text-zinc-500 whitespace-nowrap" title="${esc(
+    `<span class="ml-auto text-callout text-gray-400 dark:text-zinc-500 whitespace-nowrap">${esc(
       formatAbsolute(r.createdAt),
-    )}">${esc(formatRelative(r.createdAt))}</span>` +
-    `<svg class="w-4 h-4 text-gray-400 dark:text-zinc-500 transition-transform group-open:rotate-180" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7"/></svg>` +
-    `</summary>`
-
-  const noDetailRow =
-    `<div class="w-full flex items-center gap-3 px-4 py-3 text-left rounded-2xl">` +
-    ipBlock +
-    `<span class="text-caption text-gray-500 dark:text-zinc-400 whitespace-nowrap">${esc(entityLabel)}</span>` +
-    `<span class="text-button-sm px-2.5 py-0.5 rounded-full border whitespace-nowrap ${badge.className}">${esc(
-      badge.label,
     )}</span>` +
-    `<span class="text-callout text-gray-900 dark:text-zinc-100 truncate">${esc(displayLabel)}</span>` +
-    `<span class="ml-auto text-caption text-gray-400 dark:text-zinc-500 whitespace-nowrap" title="${esc(
-      formatAbsolute(r.createdAt),
-    )}">${esc(formatRelative(r.createdAt))}</span>` +
-    `</div>`
-
-  const body = hasDetail
-    ? `<details class="group">${summary}<div class="px-4 pb-4 border-t border-gray-100 dark:border-[#1f1f1f] pt-3">${detailBody}</div></details>`
-    : noDetailRow
-
-  return (
-    `<div class="bg-white dark:bg-[#0d0d0d] border border-gray-200 dark:border-[#1f1f1f] rounded-2xl fade-in" data-audit-id="${r.id}">` +
-    body +
     `</div>`
   )
 }

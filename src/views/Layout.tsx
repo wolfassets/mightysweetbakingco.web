@@ -161,10 +161,10 @@ export const Layout: FC<PropsWithChildren<LayoutProps>> = ({ title = 'Mighty Swe
               <NavLink href="/flavors" active={active === 'flavors'}>Flavors</NavLink>
               <NavLink href="/events" active={active === 'events'}>Events</NavLink>
               <NavLink href="/deliveries" active={active === 'deliveries'}>Deliveries</NavLink>
-              <NavLink href="/map" active={active === 'map'}>Map</NavLink>
-              <NavLink href="/activity" active={active === 'activity'}>Activity</NavLink>
               <NavLink href="/donations" active={active === 'donations'}>Donations</NavLink>
+              <NavLink href="/map" active={active === 'map'}>Map</NavLink>
               <NavLink href="/experimental" active={active === 'experimental'}>Experimental</NavLink>
+              <NavLink href="/activity" active={active === 'activity'}>Activity</NavLink>
             </nav>
             <div class="w-px h-6 bg-gray-200 dark:bg-[#262626] mx-2" />
             <ThemeToggle />

@@ -15,6 +15,13 @@ export const date = (s: string | null | undefined) => {
   return d.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' })
 }
 
+export const dateLong = (s: string | null | undefined) => {
+  if (!s) return '—'
+  const d = new Date(s.includes('T') ? s : `${s}T00:00:00`)
+  if (isNaN(d.getTime())) return s
+  return d.toLocaleDateString('en-US', { month: 'long', day: 'numeric', year: 'numeric' })
+}
+
 export const dateShort = (s: string | null | undefined) => {
   if (!s) return '—'
   const d = new Date(s.includes('T') ? s : `${s}T00:00:00`)

@@ -23,7 +23,7 @@
 import type { FC } from 'hono/jsx'
 import { Layout } from './Layout.js'
 import { HoldArchiveButton } from './components.js'
-import { usd, isoDate } from '../lib/format.js'
+import { usd, isoDate, dateLong } from '../lib/format.js'
 import type { Delivery } from './Deliveries.js'
 import type { Flavor, FlavorPrice } from './Flavors.js'
 
@@ -74,6 +74,13 @@ function getExpirationStatus(expirationDate: string | null): { color: string } {
   return { color: 'text-green-700 dark:text-green-400' }
 }
 
+function plainNoteValue(value: string | null | undefined): string {
+  if (!value) return ''
+  const trimmed = value.trim()
+  if (trimmed === '<p></p>' || trimmed === '<p><br></p>') return ''
+  return value
+}
+
 function getRatesForFlavor(flavorName: string, flavors: Flavor[], prices: FlavorPrice[]): FlavorPrice[] {
   const flavor = flavors.find((f) => f.name === flavorName)
   if (!flavor) return []
@@ -95,6 +102,249 @@ function getMatchingRate(item: DeliveryItem, flavors: Flavor[], prices: FlavorPr
 }
 
 const normalizeStore = (s: string) => s.trim().toLowerCase().replace(/\s+/g, ' ')
+const readMapKitToken = () => process.env.MAPKIT_TOKEN ?? process.env.NEXT_PUBLIC_MAPKIT_TOKEN ?? ''
+
+type SuggestedDeliverySet = {
+  delivery: Delivery
+  items: DeliveryItem[]
+  totalPrepared: number
+}
+
+function getSuggestedDeliverySets(
+  delivery: Delivery,
+  allDeliveries: Delivery[],
+  allItems: DeliveryItem[],
+): SuggestedDeliverySet[] {
+  return allDeliveries
+    .filter((d) => normalizeStore(d.storeName) === normalizeStore(delivery.storeName) && d.id !== delivery.id)
+    .map((d) => {
+      const setItems = allItems.filter((i) => i.deliveryId === d.id)
+      return {
+        delivery: d,
+        items: setItems,
+        totalPrepared: setItems.reduce((sum, item) => sum + item.prepared, 0),
+      }
+    })
+    .filter((set) => set.items.length > 0)
+    .sort((a, b) => {
+      const aDate = new Date((a.delivery.dropoffDate || a.delivery.datePrepared) + 'T00:00:00').getTime()
+      const bDate = new Date((b.delivery.dropoffDate || b.delivery.datePrepared) + 'T00:00:00').getTime()
+      return bDate - aDate
+    })
+    .slice(0, 3)
+}
+
+const mapKitLoaderScript = (token: string) => `
+(function(w){
+  if (w.__mscLoadMapKit) return;
+  var SCRIPT_ID = 'apple-mapkit-js';
+  var TOKEN = ${JSON.stringify(token)};
+  var loadPromise = null;
+  w.__mscLoadMapKit = function(){
+    if (typeof w === 'undefined') return Promise.resolve();
+    if (!TOKEN) return Promise.reject(new Error('MapKit token missing'));
+    if (w.mapkit && w.mapkit.Coordinate) return Promise.resolve();
+    if (loadPromise) return loadPromise;
+    loadPromise = new Promise(function(resolve, reject){
+      var existing = document.getElementById(SCRIPT_ID);
+      if (existing) {
+        if (w.mapkit) {
+          try { w.mapkit.init({ authorizationCallback: function(done){ done(TOKEN); } }); } catch(e){}
+          resolve();
+        }
+        existing.addEventListener('load', function(){
+          if (w.mapkit) {
+            w.mapkit.init({ authorizationCallback: function(done){ done(TOKEN); } });
+          }
+          resolve();
+        }, { once: true });
+        existing.addEventListener('error', function(){ reject(new Error('MapKit load failed')); }, { once: true });
+        return;
+      }
+      var s = document.createElement('script');
+      s.id = SCRIPT_ID;
+      s.src = 'https://cdn.apple-mapkit.com/mk/5.x.x/mapkit.js';
+      s.crossOrigin = 'anonymous';
+      s.onload = function(){
+        if (!w.mapkit) { reject(new Error('MapKit failed to attach')); return; }
+        try { w.mapkit.init({ authorizationCallback: function(done){ done(TOKEN); } }); } catch(e){}
+        resolve();
+      };
+      s.onerror = function(){ reject(new Error('MapKit load failed')); };
+      document.head.appendChild(s);
+    });
+    return loadPromise;
+  };
+})(window);
+`
+
+const DELIVERY_MAP_SCRIPT = (location: string, label: string, dateLabel: string) => `
+(function(){
+  var data = ${JSON.stringify({ location: location || '', label, dateLabel })};
+  var loading = document.getElementById('delivery-map-loading');
+  var container = document.getElementById('delivery-map-canvas');
+  if (!container) return;
+  if (!data.location) {
+    if (loading) {
+      loading.textContent = 'No location set';
+      loading.style.opacity = '1';
+    }
+    return;
+  }
+  function init(){
+    var scheme = document.documentElement.classList.contains('dark') ? 'dark' : 'light';
+    var map = new window.mapkit.Map(container, {
+      showsCompass: window.mapkit.FeatureVisibility.Adaptive,
+      showsScale: window.mapkit.FeatureVisibility.Adaptive,
+      colorScheme: scheme === 'dark' ? window.mapkit.Map.ColorSchemes.Dark : window.mapkit.Map.ColorSchemes.Light,
+    });
+    var geocoder = new window.mapkit.Geocoder();
+    geocoder.lookup(data.location, function(err, res){
+      if (err || !res || !res.results || !res.results.length) {
+        if (loading) {
+          loading.style.opacity = '1';
+          loading.style.color = '#ef4444';
+          loading.textContent = 'Could not geocode location';
+        }
+        return;
+      }
+      var raw = res.results[0].coordinate;
+      var lat = Number(raw && raw.latitude);
+      var lng = Number(raw && raw.longitude);
+      if (!isFinite(lat) || !isFinite(lng)) {
+        if (loading) {
+          loading.style.opacity = '1';
+          loading.style.color = '#ef4444';
+          loading.textContent = 'Invalid location coordinates';
+        }
+        return;
+      }
+      var coord = new window.mapkit.Coordinate(lat, lng);
+      var marker = new window.mapkit.MarkerAnnotation(coord, {
+        title: data.label,
+        subtitle: data.dateLabel,
+        color: '#ec4899',
+        glyphColor: '#ffffff',
+      });
+      try { map.addAnnotation(marker); } catch(e){}
+      map.region = new window.mapkit.CoordinateRegion(coord, new window.mapkit.CoordinateSpan(0.35, 0.35));
+      if (loading) loading.style.opacity = '0';
+    });
+  }
+  function go(){
+    if (!window.__mscLoadMapKit) {
+      setTimeout(go, 50);
+      return;
+    }
+    window.__mscLoadMapKit().then(function(){
+      if (!window.mapkit || !window.mapkit.Coordinate) throw new Error('MapKit unavailable');
+      init();
+    }).catch(function(){
+      if (loading) {
+        loading.style.opacity = '1';
+        loading.style.color = '#ef4444';
+        loading.textContent = 'Map failed to load';
+      }
+    });
+  }
+  go();
+})();
+`
+
+const DATE_INPUT_SYNC_SCRIPT = `
+(function(){
+  if (window.__mscSyncDeliveryDate) return;
+  function pad(v){
+    return String(v).padStart(2, '0');
+  }
+  function toIso(s){
+    var raw = String(s || '').trim();
+    if (!raw) return '';
+    var v = raw.replace(/,/g, ' ').replace(/\\s+/g, ' ').trim();
+    var m1 = /^([A-Za-z]{3,9})\\s+(\\d{1,2})\\s+(\\d{4})$/.exec(v);
+    if (m1) {
+      var months = ['jan','feb','mar','apr','may','jun','jul','aug','sep','oct','nov','dec'];
+      var idx = months.indexOf(m1[1].slice(0,3).toLowerCase());
+      if (idx >= 0) {
+        var d = Number(m1[2]);
+        if (d >= 1 && d <= 31) {
+          return m1[3] + '-' + pad(idx + 1) + '-' + pad(d);
+        }
+      }
+    }
+    if (/^\\d{4}-\\d{2}-\\d{2}$/.test(v)) return v;
+    var parsed = new Date(v);
+    if (isNaN(parsed.getTime())) return '';
+    return parsed.getFullYear() + '-' + pad(parsed.getMonth() + 1) + '-' + pad(parsed.getDate());
+  }
+  window.__mscSyncDeliveryDate = function(input, hiddenId){
+    var hidden = document.getElementById(hiddenId);
+    if (!hidden) return;
+    hidden.value = toIso(input.value);
+  };
+  window.__mscOpenDeliveryDatePicker = function(dateId){
+    var input = document.getElementById(dateId);
+    if (!input) return;
+    if (typeof input.showPicker === 'function') input.showPicker();
+    else input.click();
+  };
+  window.__mscSyncDeliveryDateDisplay = function(input, displayId){
+    var display = document.getElementById(displayId);
+    if (!display) return;
+    if (!input.value) {
+      display.value = '';
+      return;
+    }
+    var parsed = new Date(input.value + 'T00:00:00');
+    if (isNaN(parsed.getTime())) {
+      display.value = input.value;
+      return;
+    }
+    display.value = parsed.toLocaleDateString('en-US', {
+      month: 'long',
+      day: 'numeric',
+      year: 'numeric'
+    });
+  };
+  window.__mscFocusDeliveryField = function(row){
+    var input = row && row.querySelector('input:not([type="hidden"])');
+    if (!input) return;
+    if (input.type === 'date' && typeof input.showPicker === 'function') input.showPicker();
+    else if (input.dataset && input.dataset.datePickerId) window.__mscOpenDeliveryDatePicker(input.dataset.datePickerId);
+    else {
+      input.focus();
+      if (typeof input.select === 'function') input.select();
+    }
+  };
+})();
+`
+
+const MONEY_INPUT_SYNC_SCRIPT = `
+(function(){
+  if (window.__mscSyncDeliveryMoney) return;
+  function toNumber(value){
+    var raw = String(value || '').replace(/[$,]/g, '').trim();
+    if (!raw) return 0;
+    var parsed = Number(raw);
+    return Number.isFinite(parsed) ? parsed : 0;
+  }
+  function formatMoney(value){
+    return new Intl.NumberFormat('en-US', {
+      style: 'currency',
+      currency: 'USD',
+      minimumFractionDigits: 2,
+      maximumFractionDigits: 2
+    }).format(value);
+  }
+  window.__mscSyncDeliveryMoney = function(input, hiddenId){
+    var hidden = document.getElementById(hiddenId);
+    if (!hidden) return;
+    var value = toNumber(input.value);
+    hidden.value = value.toFixed(2);
+    input.value = formatMoney(value);
+  };
+})();
+`
 
 // ─────────────────────────────────────────────────────────────────────────────
 // FormatDateFull — date with weekday in mono pink
@@ -307,24 +557,24 @@ const Toolbar: FC<{ delivery: Delivery }> = ({ delivery }) => (
         hx-patch={`/deliveries/${delivery.id}`}
         hx-trigger="change delay:300ms from:find input"
         hx-swap="none"
-        class="inline-flex items-center gap-1.5 group/edit editable-cell"
+        class="inline-flex items-center gap-1 group/edit px-0 py-0"
       >
+        <input
+          type="text"
+          name="storeName"
+          value={delivery.storeName}
+          class="text-title-2 text-gray-900 dark:text-zinc-100 bg-transparent border-0 focus:ring-2 focus:ring-pink-500 rounded-lg px-0 text-right w-auto"
+          style={`width: ${Math.max(delivery.storeName.trim().length, 8)}ch;`}
+        />
         <svg
-          class="text-gray-300 dark:text-zinc-700 group-hover/edit:text-gray-400 dark:group-hover/edit:text-zinc-500 shrink-0 transition-colors"
-          style="width: 1em; height: 1em;"
+          class="text-black dark:text-zinc-100 shrink-0"
+          style="width: 0.9em; height: 0.9em;"
           fill="none"
           stroke="currentColor"
           viewBox="0 0 24 24"
         >
           <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15.232 5.232l3.536 3.536m-2.036-5.036a2.5 2.5 0 113.536 3.536L6.5 21.036H3v-3.572L16.732 3.732z" />
         </svg>
-        <input
-          type="text"
-          name="storeName"
-          value={delivery.storeName}
-          class="text-title-2 text-gray-900 dark:text-zinc-100 bg-transparent border-0 focus:ring-2 focus:ring-pink-500 rounded-lg px-2 text-center w-auto"
-          style={`width: ${Math.max(delivery.storeName.length + 2, 8)}ch;`}
-        />
       </form>
     </div>
     <div class="shrink-0 w-[350px] grid grid-cols-2 gap-2">
@@ -338,7 +588,11 @@ const Toolbar: FC<{ delivery: Delivery }> = ({ delivery }) => (
         </svg>
         Download Invoice
       </button>
-      <HoldArchiveButton url={`/deliveries/${delivery.id}`} target="body" />
+      <HoldArchiveButton
+        url={`/deliveries/${delivery.id}`}
+        target="body"
+        class="relative overflow-hidden w-full inline-flex items-center justify-center rounded-xl bg-red-500 px-3 py-2 text-button text-white transition-colors hover:bg-red-600 whitespace-nowrap select-none"
+      />
     </div>
   </div>
 )
@@ -352,21 +606,68 @@ const ItemsTable: FC<{
   items: DeliveryItem[]
   flavors: Flavor[]
   prices: FlavorPrice[]
-}> = ({ delivery, items, flavors, prices }) => {
+  suggestions?: SuggestedDeliverySet[]
+}> = ({ delivery, items, flavors, prices, suggestions = [] }) => {
   if (items.length === 0) {
     return (
-      <div class="text-center py-12 text-gray-400 dark:text-zinc-500">
-        <div>No flavors added to this delivery yet.</div>
-        <button
-          type="button"
-          onclick="document.getElementById('add-flavor-modal').classList.remove('hidden')"
-          class="mt-4 inline-flex items-center gap-1 rounded-lg px-3 py-1.5 text-button text-pink-600 transition-colors hover:bg-pink-50 hover:text-pink-700 dark:text-pink-400 dark:hover:bg-pink-950/30 dark:hover:text-pink-300"
-        >
-          <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 4v16m8-8H4" />
-          </svg>
-          Add Flavor
-        </button>
+      <div class="py-8 text-gray-400 dark:text-zinc-500">
+        <div class="text-center">No flavors added to this delivery yet.</div>
+        {suggestions.length > 0 && (
+          <div class="mx-auto mt-5 max-w-3xl text-left">
+            <div class="mb-2 px-1 text-headline text-gray-900 dark:text-zinc-100">Suggested sets</div>
+            <div class="grid gap-2 md:grid-cols-3">
+              {suggestions.map((set) => {
+                const preview = set.items
+                  .slice(0, 4)
+                  .map((item) => `${item.prepared}x ${item.flavorName}`)
+                  .join(', ')
+                const extra = set.items.length > 4 ? ` +${set.items.length - 4} more` : ''
+                return (
+                  <form
+                    hx-post="/delivery-items/suggested-set"
+                    hx-target="#delivery-items"
+                    hx-swap="outerHTML"
+                    class="rounded-2xl border border-gray-200 bg-white p-3 shadow-sm transition-colors hover:border-pink-200 hover:bg-pink-50/40 dark:border-[#262626] dark:bg-[#0a0a0a] dark:hover:border-pink-900/50 dark:hover:bg-pink-950/10"
+                  >
+                    <input type="hidden" name="deliveryId" value={delivery.id} />
+                    <input type="hidden" name="sourceDeliveryId" value={set.delivery.id} />
+                    <div class="flex items-start justify-between gap-3">
+                      <div>
+                        <div class="text-callout text-gray-900 dark:text-zinc-100">
+                          {dateLong(set.delivery.dropoffDate ?? set.delivery.datePrepared)}
+                        </div>
+                        <div class="mt-0.5 text-caption-1 text-gray-500 dark:text-zinc-400">
+                          {set.items.length} flavor{set.items.length === 1 ? '' : 's'} | {set.totalPrepared} prepared
+                        </div>
+                      </div>
+                      <button
+                        type="submit"
+                        class="shrink-0 rounded-full bg-pink-500 px-3 py-1 text-button text-white transition-colors hover:bg-pink-600"
+                      >
+                        Use
+                      </button>
+                    </div>
+                    <div class="mt-2 line-clamp-2 text-caption-1 leading-5 text-gray-600 dark:text-zinc-400">
+                      {preview}{extra}
+                    </div>
+                  </form>
+                )
+              })}
+            </div>
+          </div>
+        )}
+        <div class="text-center">
+          <button
+            type="button"
+            onclick="document.getElementById('add-flavor-modal').classList.remove('hidden')"
+            class="mt-4 inline-flex items-center gap-1 rounded-lg px-3 py-1.5 text-button text-pink-600 transition-colors hover:bg-pink-50 hover:text-pink-700 dark:text-pink-400 dark:hover:bg-pink-950/30 dark:hover:text-pink-300"
+          >
+            <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 4v16m8-8H4" />
+            </svg>
+            Add Flavor
+          </button>
+        </div>
       </div>
     )
   }
@@ -932,7 +1233,12 @@ window.mscDownloadInvoice = async function(deliveryId){
       doc.text(expDateText, 14 + expTextW, y);
     }
 
-    if (delivery.invoiceNotes && delivery.invoiceNotes.trim() && delivery.invoiceNotes !== '<p><br></p>') {
+    if (
+      delivery.invoiceNotes &&
+      delivery.invoiceNotes.trim() &&
+      delivery.invoiceNotes.trim() !== '<p></p>' &&
+      delivery.invoiceNotes.trim() !== '<p><br></p>'
+    ) {
       y += 14;
       applyTypo('sans', 16, 'semibold', -0.32);
       doc.setTextColor(30,30,30);
@@ -1010,6 +1316,83 @@ export const DeliveryDetailPage: FC<{
 }> = ({ delivery, items, flavors, prices, allDeliveries = [], allItems = [] }) => {
   const totalCollected = (delivery.cashCollected || 0) + (delivery.venmoCollected || 0) + (delivery.otherCollected || 0)
   const expirationStatus = getExpirationStatus(delivery.expirationDate)
+  const suggestedSets = items.length === 0 ? getSuggestedDeliverySets(delivery, allDeliveries, allItems) : []
+  const detailLabelClass = 'text-headline text-gray-500 dark:text-zinc-400 leading-5'
+  const detailEditableValueClass = 'flex h-7 items-center gap-px'
+  const detailReadOnlyValueClass = 'flex h-7 w-full items-center px-0 text-left text-callout leading-5 whitespace-nowrap'
+  const detailInputClass =
+    'h-7 w-full text-left text-callout leading-5 text-gray-900 dark:text-zinc-100 hover:text-pink-600 dark:hover:text-pink-400 hover:bg-gray-50 dark:hover:bg-[#171717] px-2 py-0 rounded transition-colors bg-transparent border-0 focus:ring-2 focus:ring-pink-500'
+  const pencilIcon = (
+    <svg
+      class="text-black dark:text-zinc-100 shrink-0"
+      style="width: 0.9em; height: 0.9em;"
+      fill="none"
+      stroke="currentColor"
+      viewBox="0 0 24 24"
+    >
+      <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15.232 5.232l3.536 3.536m-2.036-5.036a2.5 2.5 0 113.536 3.536L6.5 21.036H3v-3.572L16.732 3.732z" />
+    </svg>
+  )
+  const field = (label: string, value: any) => (
+    <div class="flex flex-col gap-0.5">
+      <span class={detailLabelClass}>{label}</span>
+      {value}
+    </div>
+  )
+  const editableField = (label: string, value: any) =>
+    field(
+      label,
+      <div class={detailEditableValueClass} onclick="__mscFocusDeliveryField(this)">
+        {pencilIcon}
+        {value}
+      </div>,
+    )
+  const readOnlyField = (label: string, value: string, colorClass: string) =>
+    field(label, <div class={`${detailReadOnlyValueClass} ${colorClass}`}>{value}</div>)
+  const moneyField = (label: string, name: string, amount: number | null | undefined) => {
+    const value = amount ?? 0
+    const hiddenId = `delivery-money-${name}`
+    return editableField(
+      label,
+      <>
+        <input
+          type="text"
+          value={usd(value)}
+          onchange={`__mscSyncDeliveryMoney(this, '${hiddenId}')`}
+          class={detailInputClass}
+        />
+        <input type="hidden" id={hiddenId} name={name} value={value.toFixed(2)} />
+      </>,
+    )
+  }
+  const dateField = (label: string, name: string, dateValue: string | null | undefined) => {
+    const iso = isoDate(dateValue)
+    const dateId = `delivery-date-picker-${name}`
+    const displayId = `delivery-date-display-${name}`
+    return editableField(
+      label,
+      <>
+        <input
+          id={displayId}
+          type="text"
+          readonly
+          value={dateLong(dateValue)}
+          data-date-picker-id={dateId}
+          onclick={`__mscOpenDeliveryDatePicker('${dateId}')`}
+          class={`${detailInputClass} cursor-pointer`}
+        />
+        <input
+          id={dateId}
+          type="date"
+          name={name}
+          value={iso}
+          onchange={`__mscSyncDeliveryDateDisplay(this, '${displayId}')`}
+          class="sr-only"
+          tabIndex={-1}
+        />
+      </>,
+    )
+  }
 
   return (
     <Layout title={delivery.storeName.trim()} active="deliveries">
@@ -1031,21 +1414,66 @@ export const DeliveryDetailPage: FC<{
                   </div>
 
                   <div id="delivery-items" class="px-5 pb-4 w-full">
-                    <ItemsTable delivery={delivery} items={items} flavors={flavors} prices={prices} />
+                    <ItemsTable delivery={delivery} items={items} flavors={flavors} prices={prices} suggestions={suggestedSets} />
                   </div>
                 </div>
               </div>
             </div>
 
             <PreviousDeliveries delivery={delivery} allDeliveries={allDeliveries} allItems={allItems} />
+
+            <div class="px-5 pt-4 pb-2">
+              <h3 class="text-title-3 text-gray-900 dark:text-zinc-100">Additional Information</h3>
+              <p class="text-callout text-gray-900 dark:text-zinc-100 mt-1">
+                Keep internal context and customer-facing invoice notes for this delivery.
+              </p>
+              <form
+                hx-patch={`/deliveries/${delivery.id}`}
+                hx-trigger="change delay:500ms"
+                hx-swap="none"
+                class="mt-4 grid grid-cols-1 gap-4 lg:grid-cols-2"
+              >
+                <div>
+                  <label class="block text-headline text-gray-500 dark:text-zinc-400 mb-1.5">Personal Notes</label>
+                  <textarea
+                    name="notes"
+                    rows={6}
+                    placeholder="Add internal notes..."
+                    class="w-full px-3 py-2 rounded-xl border border-gray-200 dark:border-[#262626] bg-white dark:bg-[#0a0a0a] text-callout text-gray-900 dark:text-zinc-100 focus:ring-2 focus:ring-pink-500 focus:border-pink-500 resize-y min-h-[150px]"
+                  >{plainNoteValue(delivery.notes)}</textarea>
+                </div>
+                <div>
+                  <label class="block text-headline text-gray-500 dark:text-zinc-400 mb-1.5">Invoice Notes</label>
+                  <textarea
+                    name="invoiceNotes"
+                    rows={6}
+                    placeholder="Notes shown on the customer invoice..."
+                    class="w-full px-3 py-2 rounded-xl border border-gray-200 dark:border-[#262626] bg-white dark:bg-[#0a0a0a] text-callout text-gray-900 dark:text-zinc-100 focus:ring-2 focus:ring-pink-500 focus:border-pink-500 resize-y min-h-[150px]"
+                  >{plainNoteValue(delivery.invoiceNotes)}</textarea>
+                </div>
+              </form>
+            </div>
           </div>
 
           {/* Right sidebar — map + info + payments + notes */}
           <div class="space-y-4">
             <div class="relative h-[350px] w-[350px] max-w-full overflow-hidden rounded-2xl border border-gray-200 bg-white dark:border-[#262626] dark:bg-[#0a0a0a]">
-              <div class="absolute inset-0 flex items-center justify-center text-callout text-gray-400 dark:text-zinc-500">
-                {delivery.location ? delivery.location : 'No location set'}
+              <div id="delivery-map-loading" class="absolute inset-0 flex items-center justify-center text-callout text-gray-400 dark:text-zinc-500">
+                {delivery.location ? 'Loading map…' : 'No location set'}
               </div>
+              <div id="delivery-map-canvas" class="absolute inset-0" />
+              <script dangerouslySetInnerHTML={{ __html: mapKitLoaderScript(readMapKitToken()) }} />
+              <script
+                dangerouslySetInnerHTML={{
+                  __html: DELIVERY_MAP_SCRIPT(
+                    delivery.location ?? '',
+                    delivery.storeName.trim(),
+                    dateLong(delivery.dropoffDate ?? delivery.datePrepared),
+                  ),
+                }}
+              />
+              <script dangerouslySetInnerHTML={{ __html: DATE_INPUT_SYNC_SCRIPT }} />
+              <script dangerouslySetInnerHTML={{ __html: MONEY_INPUT_SYNC_SCRIPT }} />
             </div>
 
             <form
@@ -1061,7 +1489,7 @@ export const DeliveryDetailPage: FC<{
                   name="location"
                   value={delivery.location ?? ''}
                   placeholder="Click to add address"
-                  class="w-full text-callout text-gray-900 dark:text-zinc-100 hover:text-pink-600 dark:hover:text-pink-400 hover:bg-gray-50 dark:hover:bg-[#171717] px-2 -ml-2 rounded transition-colors bg-transparent border-0 focus:ring-2 focus:ring-pink-500"
+                  class="w-full text-left text-callout text-gray-900 dark:text-zinc-100 hover:text-pink-600 dark:hover:text-pink-400 hover:bg-gray-50 dark:hover:bg-[#171717] px-0 rounded transition-colors bg-transparent border-0 focus:ring-2 focus:ring-pink-500"
                 />
               </div>
 
@@ -1069,260 +1497,31 @@ export const DeliveryDetailPage: FC<{
                 <h3 class="text-headline text-gray-900 dark:text-zinc-100 mb-3">Delivery Info & Payments</h3>
                 <div class="grid grid-cols-2 gap-x-6 gap-y-2 items-start">
                   <div>
-                    <div class="space-y-3">
-                      <div class="flex flex-col gap-0.5">
-                        <span class="text-headline text-gray-500 dark:text-zinc-400">Prepared</span>
-                        <div class="editable-cell flex items-center gap-1.5 group/edit">
-                          <svg
-                            class="text-gray-300 dark:text-zinc-700 group-hover/edit:text-gray-400 dark:group-hover/edit:text-zinc-500 shrink-0 transition-colors"
-                            style="width: 1em; height: 1em;"
-                            fill="none"
-                            stroke="currentColor"
-                            viewBox="0 0 24 24"
-                          >
-                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15.232 5.232l3.536 3.536m-2.036-5.036a2.5 2.5 0 113.536 3.536L6.5 21.036H3v-3.572L16.732 3.732z" />
-                          </svg>
-                          <input
-                            type="date"
-                            name="datePrepared"
-                            value={isoDate(delivery.datePrepared)}
-                            class="text-headline text-gray-900 dark:text-zinc-100 hover:text-pink-600 dark:hover:text-pink-400 hover:bg-gray-50 dark:hover:bg-[#171717] px-2 -ml-2 rounded transition-colors bg-transparent border-0 focus:ring-2 focus:ring-pink-500"
-                          />
-                        </div>
-                      </div>
-                      <div class="flex flex-col gap-0.5">
-                        <span class="text-headline text-gray-500 dark:text-zinc-400">Dropoff</span>
-                        <div class="editable-cell flex items-center gap-1.5 group/edit">
-                          <svg
-                            class="text-gray-300 dark:text-zinc-700 group-hover/edit:text-gray-400 dark:group-hover/edit:text-zinc-500 shrink-0 transition-colors"
-                            style="width: 1em; height: 1em;"
-                            fill="none"
-                            stroke="currentColor"
-                            viewBox="0 0 24 24"
-                          >
-                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15.232 5.232l3.536 3.536m-2.036-5.036a2.5 2.5 0 113.536 3.536L6.5 21.036H3v-3.572L16.732 3.732z" />
-                          </svg>
-                          <input
-                            type="date"
-                            name="dropoffDate"
-                            value={isoDate(delivery.dropoffDate)}
-                            class="text-headline text-gray-900 dark:text-zinc-100 hover:text-pink-600 dark:hover:text-pink-400 hover:bg-gray-50 dark:hover:bg-[#171717] px-2 -ml-2 rounded transition-colors bg-transparent border-0 focus:ring-2 focus:ring-pink-500"
-                          />
-                        </div>
-                      </div>
-                      <div class="flex flex-col gap-0.5">
-                        <span class="text-headline text-gray-500 dark:text-zinc-400">Expiration</span>
-                        <div class="editable-cell flex items-center gap-1.5 group/edit">
-                          <svg
-                            class="text-gray-300 dark:text-zinc-700 group-hover/edit:text-gray-400 dark:group-hover/edit:text-zinc-500 shrink-0 transition-colors"
-                            style="width: 1em; height: 1em;"
-                            fill="none"
-                            stroke="currentColor"
-                            viewBox="0 0 24 24"
-                          >
-                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15.232 5.232l3.536 3.536m-2.036-5.036a2.5 2.5 0 113.536 3.536L6.5 21.036H3v-3.572L16.732 3.732z" />
-                          </svg>
-                          {delivery.expirationDate ? (
-                            <input
-                              type="date"
-                              name="expirationDate"
-                              value={isoDate(delivery.expirationDate)}
-                              class={`text-headline px-2 -ml-2 ${expirationStatus.color} bg-transparent border-0 focus:ring-2 focus:ring-pink-500 rounded transition-colors whitespace-nowrap`}
-                            />
-                          ) : (
-                            <input
-                              type="date"
-                              name="expirationDate"
-                              value=""
-                              placeholder="Not set"
-                              class="text-callout text-gray-400 dark:text-zinc-500 px-2 -ml-2 bg-transparent border-0 focus:ring-2 focus:ring-pink-500 rounded"
-                            />
-                          )}
-                        </div>
-                      </div>
+                    <div class="space-y-2.5">
+                      {dateField('Prepared', 'datePrepared', delivery.datePrepared)}
+                      {dateField('Dropoff', 'dropoffDate', delivery.dropoffDate)}
+                      {readOnlyField(
+                        'Expiration',
+                        delivery.expirationDate ? dateLong(delivery.expirationDate) : 'Not set',
+                        expirationStatus.color,
+                      )}
                     </div>
                   </div>
                   <div>
-                    <div class="space-y-3">
-                      <div class="flex flex-col gap-0.5">
-                        <span class="text-headline text-gray-500 dark:text-zinc-400">Cash</span>
-                        <div class="editable-cell flex items-center gap-1.5 group/edit">
-                          <svg
-                            class="text-gray-300 dark:text-zinc-700 group-hover/edit:text-gray-400 dark:group-hover/edit:text-zinc-500 shrink-0 transition-colors"
-                            style="width: 1em; height: 1em;"
-                            fill="none"
-                            stroke="currentColor"
-                            viewBox="0 0 24 24"
-                          >
-                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15.232 5.232l3.536 3.536m-2.036-5.036a2.5 2.5 0 113.536 3.536L6.5 21.036H3v-3.572L16.732 3.732z" />
-                          </svg>
-                          <input
-                            type="number"
-                            step="0.01"
-                            name="cashCollected"
-                            value={delivery.cashCollected ?? 0}
-                            class="text-callout text-gray-900 dark:text-zinc-100 hover:text-pink-600 dark:hover:text-pink-400 hover:bg-gray-50 dark:hover:bg-[#171717] px-2 -ml-2 rounded transition-colors bg-transparent border-0 focus:ring-2 focus:ring-pink-500"
-                          />
-                        </div>
-                      </div>
-                      <div class="flex flex-col gap-0.5">
-                        <span class="text-headline text-gray-500 dark:text-zinc-400">Venmo</span>
-                        <div class="editable-cell flex items-center gap-1.5 group/edit">
-                          <svg
-                            class="text-gray-300 dark:text-zinc-700 group-hover/edit:text-gray-400 dark:group-hover/edit:text-zinc-500 shrink-0 transition-colors"
-                            style="width: 1em; height: 1em;"
-                            fill="none"
-                            stroke="currentColor"
-                            viewBox="0 0 24 24"
-                          >
-                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15.232 5.232l3.536 3.536m-2.036-5.036a2.5 2.5 0 113.536 3.536L6.5 21.036H3v-3.572L16.732 3.732z" />
-                          </svg>
-                          <input
-                            type="number"
-                            step="0.01"
-                            name="venmoCollected"
-                            value={delivery.venmoCollected ?? 0}
-                            class="text-callout text-gray-900 dark:text-zinc-100 hover:text-pink-600 dark:hover:text-pink-400 hover:bg-gray-50 dark:hover:bg-[#171717] px-2 -ml-2 rounded transition-colors bg-transparent border-0 focus:ring-2 focus:ring-pink-500"
-                          />
-                        </div>
-                      </div>
-                      <div class="flex flex-col gap-0.5">
-                        <span class="text-headline text-gray-500 dark:text-zinc-400">Total</span>
-                        <span class="text-callout px-2 -ml-2 text-green-600 dark:text-green-400 flex items-center gap-1.5 whitespace-nowrap">
-                          {usd(totalCollected)}
-                        </span>
-                      </div>
+                    <div class="space-y-2.5">
+                      {moneyField('Cash', 'cashCollected', delivery.cashCollected)}
+                      {moneyField('Venmo', 'venmoCollected', delivery.venmoCollected)}
+                      {readOnlyField('Total', usd(totalCollected), 'text-green-600 dark:text-green-400')}
                     </div>
                   </div>
                 </div>
 
                 {/* Additional invoice fields */}
                 <div class="grid grid-cols-2 gap-x-6 gap-y-2 items-start mt-4">
-                  <div class="flex flex-col gap-0.5">
-                    <span class="text-headline text-gray-500 dark:text-zinc-400">Additional Fees</span>
-                    <div class="editable-cell flex items-center gap-1.5 group/edit">
-                      <svg
-                        class="text-gray-300 dark:text-zinc-700 group-hover/edit:text-gray-400 dark:group-hover/edit:text-zinc-500 shrink-0 transition-colors"
-                        style="width: 1em; height: 1em;"
-                        fill="none"
-                        stroke="currentColor"
-                        viewBox="0 0 24 24"
-                      >
-                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15.232 5.232l3.536 3.536m-2.036-5.036a2.5 2.5 0 113.536 3.536L6.5 21.036H3v-3.572L16.732 3.732z" />
-                      </svg>
-                      <input
-                        type="number"
-                        step="0.01"
-                        name="additionalFees"
-                        value={delivery.additionalFees ?? 0}
-                        class="text-callout text-gray-900 dark:text-zinc-100 hover:text-pink-600 dark:hover:text-pink-400 hover:bg-gray-50 dark:hover:bg-[#171717] px-2 -ml-2 rounded transition-colors bg-transparent border-0 focus:ring-2 focus:ring-pink-500"
-                      />
-                    </div>
-                  </div>
-                  <div class="flex flex-col gap-0.5">
-                    <span class="text-headline text-gray-500 dark:text-zinc-400">Discount</span>
-                    <div class="editable-cell flex items-center gap-1.5 group/edit">
-                      <svg
-                        class="text-gray-300 dark:text-zinc-700 group-hover/edit:text-gray-400 dark:group-hover/edit:text-zinc-500 shrink-0 transition-colors"
-                        style="width: 1em; height: 1em;"
-                        fill="none"
-                        stroke="currentColor"
-                        viewBox="0 0 24 24"
-                      >
-                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15.232 5.232l3.536 3.536m-2.036-5.036a2.5 2.5 0 113.536 3.536L6.5 21.036H3v-3.572L16.732 3.732z" />
-                      </svg>
-                      <input
-                        type="number"
-                        step="0.01"
-                        name="discount"
-                        value={delivery.discount ?? 0}
-                        class="text-callout text-gray-900 dark:text-zinc-100 hover:text-pink-600 dark:hover:text-pink-400 hover:bg-gray-50 dark:hover:bg-[#171717] px-2 -ml-2 rounded transition-colors bg-transparent border-0 focus:ring-2 focus:ring-pink-500"
-                      />
-                    </div>
-                  </div>
-                  <div class="flex flex-col gap-0.5">
-                    <span class="text-headline text-gray-500 dark:text-zinc-400">Prepaid</span>
-                    <div class="editable-cell flex items-center gap-1.5 group/edit">
-                      <svg
-                        class="text-gray-300 dark:text-zinc-700 group-hover/edit:text-gray-400 dark:group-hover/edit:text-zinc-500 shrink-0 transition-colors"
-                        style="width: 1em; height: 1em;"
-                        fill="none"
-                        stroke="currentColor"
-                        viewBox="0 0 24 24"
-                      >
-                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15.232 5.232l3.536 3.536m-2.036-5.036a2.5 2.5 0 113.536 3.536L6.5 21.036H3v-3.572L16.732 3.732z" />
-                      </svg>
-                      <input
-                        type="number"
-                        step="0.01"
-                        name="prepaidAmount"
-                        value={delivery.prepaidAmount ?? 0}
-                        class="text-callout text-gray-900 dark:text-zinc-100 hover:text-pink-600 dark:hover:text-pink-400 hover:bg-gray-50 dark:hover:bg-[#171717] px-2 -ml-2 rounded transition-colors bg-transparent border-0 focus:ring-2 focus:ring-pink-500"
-                      />
-                    </div>
-                  </div>
-                  <div class="flex flex-col gap-0.5">
-                    <span class="text-headline text-gray-500 dark:text-zinc-400">Other</span>
-                    <div class="editable-cell flex items-center gap-1.5 group/edit">
-                      <svg
-                        class="text-gray-300 dark:text-zinc-700 group-hover/edit:text-gray-400 dark:group-hover/edit:text-zinc-500 shrink-0 transition-colors"
-                        style="width: 1em; height: 1em;"
-                        fill="none"
-                        stroke="currentColor"
-                        viewBox="0 0 24 24"
-                      >
-                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15.232 5.232l3.536 3.536m-2.036-5.036a2.5 2.5 0 113.536 3.536L6.5 21.036H3v-3.572L16.732 3.732z" />
-                      </svg>
-                      <input
-                        type="number"
-                        step="0.01"
-                        name="otherCollected"
-                        value={delivery.otherCollected ?? 0}
-                        class="text-callout text-gray-900 dark:text-zinc-100 hover:text-pink-600 dark:hover:text-pink-400 hover:bg-gray-50 dark:hover:bg-[#171717] px-2 -ml-2 rounded transition-colors bg-transparent border-0 focus:ring-2 focus:ring-pink-500"
-                      />
-                    </div>
-                  </div>
-                </div>
-              </div>
-
-              {/* Notes: textarea fallback. TODO Quill — wire CDN + instantiate on these. */}
-              <div class="px-1 py-5 delivery-detail-notes-editor">
-                <div class="flex items-center justify-between mb-3 gap-3">
-                  <h3 class="text-headline text-gray-900 dark:text-zinc-100">Notes</h3>
-                  <div class="flex bg-[#fafafa] dark:bg-[#1f1f1f] rounded-full p-0.5 border border-gray-200 dark:border-[#262626]">
-                    <button
-                      type="button"
-                      onclick="document.getElementById('notes-personal').classList.remove('hidden');document.getElementById('notes-invoice').classList.add('hidden');this.classList.add('bg-white','dark:bg-[#0a0a0a]','shadow-sm');this.nextElementSibling.classList.remove('bg-white','dark:bg-[#0a0a0a]','shadow-sm');"
-                      class="bg-white dark:bg-[#0a0a0a] shadow-sm relative px-3 py-1 text-button rounded-full transition-colors text-gray-900 dark:text-zinc-100"
-                    >
-                      Personal
-                    </button>
-                    <button
-                      type="button"
-                      onclick="document.getElementById('notes-invoice').classList.remove('hidden');document.getElementById('notes-personal').classList.add('hidden');this.classList.add('bg-white','dark:bg-[#0a0a0a]','shadow-sm');this.previousElementSibling.classList.remove('bg-white','dark:bg-[#0a0a0a]','shadow-sm');"
-                      class="relative px-3 py-1 text-button rounded-full transition-colors text-gray-500 dark:text-zinc-400 hover:text-gray-700 dark:hover:text-zinc-200"
-                    >
-                      Invoice
-                    </button>
-                  </div>
-                </div>
-                <div id="notes-personal" class="notes-editor">
-                  {/* TODO Quill: replace with <div data-quill ...> + CDN init */}
-                  <textarea
-                    name="notes"
-                    rows={6}
-                    placeholder="Add notes..."
-                    class="w-full px-3 py-2 rounded-xl border border-gray-200 dark:border-[#262626] bg-white dark:bg-[#0a0a0a] text-callout min-h-[160px]"
-                  >{delivery.notes ?? ''}</textarea>
-                </div>
-                <div id="notes-invoice" class="notes-editor hidden">
-                  {/* TODO Quill */}
-                  <textarea
-                    name="invoiceNotes"
-                    rows={6}
-                    placeholder="Notes shown on the customer invoice..."
-                    class="w-full px-3 py-2 rounded-xl border border-gray-200 dark:border-[#262626] bg-white dark:bg-[#0a0a0a] text-callout min-h-[160px]"
-                  >{delivery.invoiceNotes ?? ''}</textarea>
+                  {moneyField('Additional Fees', 'additionalFees', delivery.additionalFees)}
+                  {moneyField('Discount', 'discount', delivery.discount)}
+                  {moneyField('Prepaid', 'prepaidAmount', delivery.prepaidAmount)}
+                  {moneyField('Other', 'otherCollected', delivery.otherCollected)}
                 </div>
               </div>
             </form>

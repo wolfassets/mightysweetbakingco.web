@@ -234,6 +234,20 @@ html.font-bricolage {
     background-color: #0a0a0a;
   }
 
+  /* .editable-cell hardcodes font-size:14px and (being later in source order)
+     beats the type utilities. Let an explicit headline/body class win so an
+     editable flavor name matches the non-editable store name in Deliveries. */
+  .editable-cell.text-headline {
+    font-size: 16px;
+    font-weight: 600;
+    line-height: 24px;
+    letter-spacing: -0.32px;
+  }
+  .editable-cell.text-body {
+    font-size: 16px;
+    line-height: 24px;
+  }
+
   /* Table styles */
   .data-table {
     width: 100%;
