@@ -1,5 +1,6 @@
 import type { FC } from 'hono/jsx'
 import { Layout } from './Layout.js'
+import { dateLong, isoDate } from '../lib/format.js'
 import type { Event, EventItem } from './Events.js'
 import type { Flavor, FlavorPrice } from './Flavors.js'
 
@@ -12,13 +13,22 @@ const formatCurrency = (n: number) =>
 
 const normalizeName = (s: string) => s.trim().toLowerCase().replace(/\s+/g, ' ')
 
-const getFlavorIdForName = (flavorName: string, flavors: Flavor[]): number => {
-  const m = flavors.find((f) => f.name === flavorName)
-  return m ? m.id : 9999
+const findFlavorByName = (flavorName: string, flavors: Flavor[]): Flavor | undefined =>
+  flavors.find((f) => normalizeName(f.name) === normalizeName(flavorName))
+
+const getFlavorIdForItem = (
+  item: EventItem & { rateId?: number | null },
+  flavors: Flavor[],
+  prices: FlavorPrice[],
+): number => {
+  const flavor = findFlavorByName(item.flavorName, flavors)
+  if (flavor) return flavor.id
+  const rate = item.rateId ? prices.find((p) => p.id === item.rateId) : null
+  return rate ? rate.flavorId : 9999
 }
 
 const getRatesForFlavor = (flavorName: string, flavors: Flavor[], prices: FlavorPrice[]): FlavorPrice[] => {
-  const flavor = flavors.find((f) => f.name === flavorName)
+  const flavor = findFlavorByName(flavorName, flavors)
   if (!flavor) return []
   return prices.filter((p) => p.flavorId === flavor.id)
 }
@@ -28,7 +38,9 @@ const getSelectableRatesForItem = (
   flavors: Flavor[],
   prices: FlavorPrice[],
 ): FlavorPrice[] => {
-  const rates = getRatesForFlavor(item.flavorName, flavors, prices)
+  const ratesByName = getRatesForFlavor(item.flavorName, flavors, prices)
+  const rate = item.rateId ? prices.find((p) => p.id === item.rateId) : null
+  const rates = ratesByName.length > 0 || !rate ? ratesByName : prices.filter((p) => p.flavorId === rate.flavorId)
   return rates.filter((r) => r.isActive || r.id === (item as any).rateId)
 }
 
@@ -52,6 +64,13 @@ const dateFull = (s: string) => {
   const weekday = d.toLocaleDateString('en-US', { weekday: 'short' }).toUpperCase()
   const rest = d.toLocaleDateString('en-US', { month: 'long', day: 'numeric', year: 'numeric' })
   return { weekday, rest }
+}
+
+function plainNoteValue(value: string | null | undefined): string {
+  if (!value) return ''
+  const trimmed = value.trim()
+  if (trimmed === '<p></p>' || trimmed === '<p><br></p>') return ''
+  return value
 }
 
 // ────────────────────────────────────────────────────────────
@@ -153,6 +172,58 @@ const inlinePageScript = `
   document.addEventListener('DOMContentLoaded', function(){ rescan(); });
   document.body.addEventListener('htmx:afterSwap', function(e){ rescan(e.target); });
 
+  function formatMoney(value){
+    return new Intl.NumberFormat('en-US', {
+      style: 'currency',
+      currency: 'USD',
+      minimumFractionDigits: 2,
+      maximumFractionDigits: 2
+    }).format(value);
+  }
+  function toMoneyNumber(value){
+    var raw = String(value || '').replace(/[$,]/g, '').trim();
+    if (!raw) return 0;
+    var parsed = Number(raw);
+    return Number.isFinite(parsed) ? parsed : 0;
+  }
+  window.__mscEventMoneyValue = toMoneyNumber;
+  window.__mscFormatEventMoney = function(input){
+    input.value = formatMoney(toMoneyNumber(input.value));
+  };
+  window.__mscOpenEventDatePicker = function(dateId){
+    var input = document.getElementById(dateId);
+    if (!input) return;
+    if (typeof input.showPicker === 'function') input.showPicker();
+    else input.click();
+  };
+  window.__mscSyncEventDateDisplay = function(input, displayId){
+    var display = document.getElementById(displayId);
+    if (!display) return;
+    if (!input.value) {
+      display.value = '';
+      return;
+    }
+    var parsed = new Date(input.value + 'T00:00:00');
+    if (isNaN(parsed.getTime())) {
+      display.value = input.value;
+      return;
+    }
+    display.value = parsed.toLocaleDateString('en-US', {
+      month: 'long',
+      day: 'numeric',
+      year: 'numeric'
+    });
+  };
+  window.__mscFocusEventField = function(row){
+    var input = row && row.querySelector('input:not([type="hidden"])');
+    if (!input) return;
+    if (input.dataset && input.dataset.datePickerId) window.__mscOpenEventDatePicker(input.dataset.datePickerId);
+    else {
+      input.focus();
+      if (typeof input.select === 'function') input.select();
+    }
+  };
+
   // Modal helpers
   window.mscOpenAddFlavor = function(){
     var el = document.getElementById('add-flavor-modal');
@@ -203,7 +274,6 @@ const EditableNumberInput: FC<{
   rowTargetId?: string
 }> = ({ value, patchUrl, field, showPencil, isCurrency, inline, className, rowTargetId }) => {
   const step = isCurrency ? '0.01' : '1'
-  const display = isCurrency ? `$${value.toFixed(2)}` : String(value)
   // We render the static display by default; click toggles the inline input.
   // Simpler & matches web-b feel: always render an input, styled to look like text until focused.
   const valsJs = isCurrency
@@ -241,8 +311,9 @@ export const EventItemRow: FC<{
   flavors: Flavor[]
   prices: FlavorPrice[]
 }> = ({ it, flavors, prices }) => {
-  const flavorId = getFlavorIdForName(it.flavorName, flavors)
+  const flavorId = getFlavorIdForItem(it as any, flavors, prices)
   const remaining = (it as any).remaining ?? 0
+  const giveaway = (it as any).giveaway ?? 0
   const revenue = (it as any).revenue ?? 0
   const cogs = (it as any).cogs ?? 0
   const profit = (it as any).profit ?? 0
@@ -253,25 +324,24 @@ export const EventItemRow: FC<{
   return (
     <tr id={rowId} class="group">
       <td>
-        <span class="py-3 min-h-[44px] flex items-center justify-center text-pink-600 dark:text-pink-400 text-callout">
+        <span class="px-1 py-3 min-h-[44px] flex items-center justify-center text-pink-600 dark:text-pink-400 text-callout">
           {flavorId}
         </span>
       </td>
       <td>
-        <span class="px-4 py-3 min-h-[44px] flex items-center text-callout text-gray-900 dark:text-zinc-100 whitespace-nowrap">
+        <span class="px-2 py-3 min-h-[44px] flex items-center text-callout text-gray-900 dark:text-zinc-100 whitespace-nowrap">
           {it.flavorName}
         </span>
       </td>
-      <td></td>
       <td>
-        <div class="px-4 py-3 min-h-[44px] flex items-center justify-start">
+        <div class="px-2 py-3 min-h-[44px] flex items-center justify-start">
           <select
             hx-patch={`/event-items/${it.id}/rate`}
             hx-trigger="change"
             hx-target={`#${rowId}`}
             hx-swap="outerHTML"
             hx-vals="js:{tierName: event.target.value}"
-            class="w-56 text-callout border border-gray-200 dark:border-[#262626] rounded-lg px-2 py-1 bg-white dark:bg-[#0a0a0a] dark:text-zinc-300 focus:ring-2 focus:ring-pink-500 focus:border-pink-500 cursor-pointer"
+            class="w-full text-callout border border-gray-200 dark:border-[#262626] rounded-lg px-2 py-1 bg-white dark:bg-[#0a0a0a] dark:text-zinc-300 focus:ring-2 focus:ring-pink-500 focus:border-pink-500 cursor-pointer"
           >
             {selectableRates.map((rate) => (
               <option value={rate.tierName} selected={rate.tierName === matchingRate}>
@@ -288,41 +358,46 @@ export const EventItemRow: FC<{
         </div>
       </td>
       <td>
-        <div class="w-full px-4 py-3 min-h-[44px] flex items-center justify-center gap-1.5 group/edit">
-          <svg
-            class="text-black dark:text-zinc-100 shrink-0"
-            style="width:0.9em;height:0.9em"
-            fill="none"
-            stroke="currentColor"
-            viewBox="0 0 24 24"
-          >
-            <path stroke-linecap="round" stroke-linejoin="round" stroke-width={2} d="M15.232 5.232l3.536 3.536m-2.036-5.036a2.5 2.5 0 113.536 3.536L6.5 21.036H3v-3.572L16.732 3.732z" />
-          </svg>
-          <EditableNumberInput
-            value={(it as any).prepared ?? 0}
-            patchUrl={`/event-items/${it.id}`}
-            field="prepared"
-            rowTargetId={rowId}
-          />
+        <div class="px-2 py-3 min-h-[44px] flex items-center justify-center">
+          <div class="w-14">
+            <EditableNumberInput
+              value={(it as any).prepared ?? 0}
+              patchUrl={`/event-items/${it.id}`}
+              field="prepared"
+              rowTargetId={rowId}
+            />
+          </div>
         </div>
       </td>
       <td>
-        <span class="px-4 py-3 min-h-[44px] flex items-center justify-center text-gray-600 dark:text-zinc-400 text-callout text-center">
+        <span class="px-2 py-3 min-h-[44px] flex items-center justify-center text-gray-600 dark:text-zinc-400 text-callout text-center">
           {remaining}
         </span>
       </td>
       <td>
-        <span class="px-4 py-3 min-h-[44px] flex items-center justify-end text-gray-600 dark:text-zinc-400 text-callout text-right">
+        <div class="px-2 py-3 min-h-[44px] flex items-center justify-center">
+          <div class="w-14">
+            <EditableNumberInput
+              value={giveaway}
+              patchUrl={`/event-items/${it.id}`}
+              field="giveaway"
+              rowTargetId={rowId}
+            />
+          </div>
+        </div>
+      </td>
+      <td>
+        <span class="px-2 py-3 min-h-[44px] flex items-center justify-end text-gray-600 dark:text-zinc-400 text-callout text-right">
           {revenue > 0 ? formatCurrency(revenue) : '—'}
         </span>
       </td>
       <td>
-        <span class="px-4 py-3 min-h-[44px] flex items-center justify-end text-callout text-right text-gray-600 dark:text-zinc-400">
+        <span class="px-2 py-3 min-h-[44px] flex items-center justify-end text-callout text-right text-gray-600 dark:text-zinc-400">
           {cogs > 0 ? formatCurrency(cogs) : '—'}
         </span>
       </td>
       <td>
-        <span class="px-4 py-3 min-h-[44px] flex items-center justify-end text-right">
+        <span class="px-2 py-3 min-h-[44px] flex items-center justify-end text-right">
           {profit > 0 ? (
             <span class="text-green-600 dark:text-green-400 text-callout">{formatCurrency(profit)}</span>
           ) : profit < 0 ? (
@@ -333,7 +408,7 @@ export const EventItemRow: FC<{
         </span>
       </td>
       <td>
-        <div class="px-4 py-3 min-h-[44px] flex items-center justify-center">
+        <div class="px-2 py-3 min-h-[44px] flex items-center justify-center">
           <button
             type="button"
             class="hold-delete-btn relative overflow-hidden rounded-full w-16 py-1 text-button-sm transition-all select-none text-center"
@@ -376,12 +451,91 @@ export const EventDetailPage: FC<{
   // Totals for items
   const totalPrepared = items.reduce((s, i) => s + ((i as any).prepared ?? 0), 0)
   const totalRemaining = items.reduce((s, i) => s + ((i as any).remaining ?? 0), 0)
+  const totalGiveaway = items.reduce((s, i) => s + ((i as any).giveaway ?? 0), 0)
   const totalRevenue = items.reduce((s, i) => s + ((i as any).revenue ?? 0), 0)
   const totalCogs = items.reduce((s, i) => s + ((i as any).cogs ?? 0), 0)
   const totalProfit = items.reduce((s, i) => s + ((i as any).profit ?? 0), 0)
 
   const collectedTotal = (event.cashCollected || 0) + (event.venmoCollected || 0) + (event.otherCollected || 0)
-  const det = dateFull(event.eventDate)
+  const detailLabelClass = 'text-headline text-gray-500 dark:text-zinc-400 leading-5'
+  const detailEditableValueClass = 'flex h-7 items-center gap-px'
+  const detailReadOnlyValueClass = 'flex h-7 w-full items-center px-0 text-left text-callout leading-5 whitespace-nowrap'
+  const detailInputClass =
+    'h-7 w-full text-left text-callout leading-5 text-gray-900 dark:text-zinc-100 hover:text-pink-600 dark:hover:text-pink-400 hover:bg-gray-50 dark:hover:bg-[#171717] px-2 py-0 rounded transition-colors bg-transparent border-0 focus:ring-2 focus:ring-pink-500'
+  const pencilIcon = (
+    <svg
+      class="text-black dark:text-zinc-100 shrink-0"
+      style="width: 0.9em; height: 0.9em;"
+      fill="none"
+      stroke="currentColor"
+      viewBox="0 0 24 24"
+    >
+      <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15.232 5.232l3.536 3.536m-2.036-5.036a2.5 2.5 0 113.536 3.536L6.5 21.036H3v-3.572L16.732 3.732z" />
+    </svg>
+  )
+  const field = (label: string, value: any) => (
+    <div class="flex flex-col gap-0.5">
+      <span class={detailLabelClass}>{label}</span>
+      {value}
+    </div>
+  )
+  const editableField = (label: string, value: any) =>
+    field(
+      label,
+      <div class={detailEditableValueClass} onclick="__mscFocusEventField(this)">
+        {pencilIcon}
+        {value}
+      </div>,
+    )
+  const readOnlyField = (label: string, value: string, colorClass: string) =>
+    field(label, <div class={`${detailReadOnlyValueClass} ${colorClass}`}>{value}</div>)
+  const moneyField = (label: string, name: string, amount: number | null | undefined) => {
+    const value = amount ?? 0
+    return editableField(
+      label,
+      <input
+        type="text"
+        value={formatCurrency(value)}
+        onchange="__mscFormatEventMoney(this)"
+        hx-patch={`/events/${event.id}`}
+        hx-trigger="change delay:500ms"
+        hx-swap="none"
+        hx-vals={`js:{${name}: __mscEventMoneyValue(event.target.value)}`}
+        class={detailInputClass}
+      />,
+    )
+  }
+  const dateField = (label: string, name: string, dateValue: string | null | undefined) => {
+    const dateId = `event-date-picker-${name}`
+    const displayId = `event-date-display-${name}`
+    return editableField(
+      label,
+      <>
+        <input
+          id={displayId}
+          type="text"
+          readonly
+          value={dateLong(dateValue)}
+          data-date-picker-id={dateId}
+          onclick={`__mscOpenEventDatePicker('${dateId}')`}
+          class={`${detailInputClass} cursor-pointer`}
+        />
+        <input
+          id={dateId}
+          type="date"
+          name={name}
+          value={isoDate(dateValue)}
+          onchange={`__mscSyncEventDateDisplay(this, '${displayId}')`}
+          hx-patch={`/events/${event.id}`}
+          hx-trigger="change"
+          hx-swap="none"
+          hx-vals={`js:{${name}: event.target.value}`}
+          class="sr-only"
+          tabIndex={-1}
+        />
+      </>,
+    )
+  }
 
   return (
     <Layout title={event.name} active="events">
@@ -464,29 +618,29 @@ export const EventDetailPage: FC<{
               ) : (
                 <table class="data-table">
                   <colgroup>
-                    <col style="width:24px" />
-                    <col style="width:260px" />
-                    <col />
-                    <col style="width:260px" />
-                    <col style="width:80px" />
-                    <col style="width:96px" />
-                    <col style="width:96px" />
-                    <col style="width:96px" />
-                    <col style="width:96px" />
-                    <col style="width:100px" />
+                    <col style="width:52px" />
+                    <col style="width:190px" />
+                    <col style="width:212px" />
+                    <col style="width:72px" />
+                    <col style="width:60px" />
+                    <col style="width:74px" />
+                    <col style="width:74px" />
+                    <col style="width:64px" />
+                    <col style="width:68px" />
+                    <col style="width:78px" />
                   </colgroup>
                   <thead>
                     <tr class="bg-gray-50 dark:bg-[#171717] [&>th:first-child]:shadow-[-20px_0_0_#f9fafb] dark:[&>th:first-child]:shadow-[-20px_0_0_#171717] [&>th:last-child]:shadow-[20px_0_0_#f9fafb] dark:[&>th:last-child]:shadow-[20px_0_0_#171717]">
-                      <th class="w-6 text-center" style="padding-left:0;padding-right:0">#</th>
-                      <th style="width:260px">Flavor</th>
-                      <th style="width:100%"></th>
-                      <th class="text-center" style="width:260px">Rate</th>
-                      <th class="text-center" style="width:80px">Prepared</th>
-                      <th class="text-center" style="width:96px">Unsold</th>
-                      <th class="text-right" style="width:96px">Revenue</th>
-                      <th class="text-right" style="width:96px">COGS</th>
-                      <th class="text-right" style="width:96px">Profit</th>
-                      <th class="text-center" style="width:100px">Actions</th>
+                      <th class="text-center" title="Flavor ID" style="width:52px;padding-left:4px;padding-right:4px;font-size:14px">ID</th>
+                      <th style="width:190px;font-size:14px">Flavor</th>
+                      <th class="text-center" style="width:212px;font-size:14px">Rate</th>
+                      <th class="text-center" style="width:72px;padding-left:4px;padding-right:4px;font-size:14px">Prepared</th>
+                      <th class="text-center" style="width:60px;padding-left:4px;padding-right:4px;font-size:14px">Unsold</th>
+                      <th class="text-center" style="width:74px;padding-left:4px;padding-right:4px;font-size:14px">Giveaway</th>
+                      <th class="text-right" style="width:74px;padding-left:4px;padding-right:4px;font-size:14px">Revenue</th>
+                      <th class="text-right" style="width:64px;padding-left:4px;padding-right:4px;font-size:14px">COGS</th>
+                      <th class="text-right" style="width:68px;padding-left:4px;padding-right:4px;font-size:14px">Profit</th>
+                      <th class="text-center" style="width:78px;padding-left:4px;padding-right:4px;font-size:14px">Actions</th>
                     </tr>
                   </thead>
                   <tbody id="event-items-tbody">
@@ -500,29 +654,33 @@ export const EventDetailPage: FC<{
                         <span class="py-3 min-h-[44px] flex items-center text-headline text-gray-900 dark:text-zinc-100">Total</span>
                       </td>
                       <td></td>
-                      <td></td>
                       <td>
-                        <span class="px-4 py-3 min-h-[44px] flex items-center justify-center text-gray-900 dark:text-zinc-100 text-callout text-center">
+                        <span class="px-2 py-3 min-h-[44px] flex items-center justify-center text-gray-900 dark:text-zinc-100 text-callout text-center">
                           {totalPrepared}
                         </span>
                       </td>
                       <td>
-                        <span class="px-4 py-3 min-h-[44px] flex items-center justify-center text-gray-900 dark:text-zinc-100 text-callout text-center">
+                        <span class="px-2 py-3 min-h-[44px] flex items-center justify-center text-gray-900 dark:text-zinc-100 text-callout text-center">
                           {totalRemaining}
                         </span>
                       </td>
                       <td>
-                        <span class="px-4 py-3 min-h-[44px] flex items-center justify-end text-callout text-right text-gray-900 dark:text-zinc-100">
+                        <span class="px-2 py-3 min-h-[44px] flex items-center justify-center text-gray-900 dark:text-zinc-100 text-callout text-center">
+                          {totalGiveaway}
+                        </span>
+                      </td>
+                      <td>
+                        <span class="px-2 py-3 min-h-[44px] flex items-center justify-end text-callout text-right text-gray-900 dark:text-zinc-100">
                           {formatCurrency(totalRevenue)}
                         </span>
                       </td>
                       <td>
-                        <span class="px-4 py-3 min-h-[44px] flex items-center justify-end text-callout text-right text-gray-900 dark:text-zinc-100">
+                        <span class="px-2 py-3 min-h-[44px] flex items-center justify-end text-callout text-right text-gray-900 dark:text-zinc-100">
                           {formatCurrency(totalCogs)}
                         </span>
                       </td>
                       <td>
-                        <span class="px-4 py-3 min-h-[44px] flex items-center justify-end text-right">
+                        <span class="px-2 py-3 min-h-[44px] flex items-center justify-end text-right">
                           {totalProfit >= 0 ? (
                             <span class="text-green-600 dark:text-green-400 text-callout">{formatCurrency(totalProfit)}</span>
                           ) : (
@@ -531,11 +689,11 @@ export const EventDetailPage: FC<{
                         </span>
                       </td>
                       <td>
-                        <div class="px-4 py-3 min-h-[44px] flex items-center justify-center">
+                        <div class="px-2 py-3 min-h-[44px] flex items-center justify-center">
                           <button
                             type="button"
                             onclick="mscOpenAddFlavor()"
-                            class="relative overflow-hidden rounded-full w-24 py-1 text-button transition-all select-none text-center whitespace-nowrap bg-green-50 text-green-600 border border-green-200 hover:bg-green-100 hover:text-green-700 dark:bg-green-950/40 dark:text-green-400 dark:border-green-900/50 dark:hover:bg-green-950/60 dark:hover:text-green-300"
+                            class="relative overflow-hidden rounded-full py-1 px-2 text-button-sm transition-all select-none text-center whitespace-nowrap bg-green-50 text-green-600 border border-green-200 hover:bg-green-100 hover:text-green-700 dark:bg-green-950/40 dark:text-green-400 dark:border-green-900/50 dark:hover:bg-green-950/60 dark:hover:text-green-300"
                           >
                             Add Flavor
                           </button>
@@ -562,25 +720,25 @@ export const EventDetailPage: FC<{
                 <div class="px-5 pb-4">
                   <table class="data-table">
                     <colgroup>
-                      <col style="width:24px" />
-                      <col style="width:260px" />
-                      <col />
-                      <col style="width:80px" />
-                      <col style="width:96px" />
-                      <col style="width:96px" />
-                      <col style="width:96px" />
-                      <col style="width:96px" />
+                      <col style="width:70px" />
+                      <col style="width:240px" />
+                      <col style="width:82px" />
+                      <col style="width:72px" />
+                      <col style="width:84px" />
+                      <col style="width:92px" />
+                      <col style="width:84px" />
+                      <col style="width:86px" />
                     </colgroup>
                     <thead>
                       <tr class="bg-gray-50 dark:bg-[#171717] [&>th:first-child]:shadow-[-20px_0_0_#f9fafb] dark:[&>th:first-child]:shadow-[-20px_0_0_#171717] [&>th:last-child]:shadow-[20px_0_0_#f9fafb] dark:[&>th:last-child]:shadow-[20px_0_0_#171717]">
-                        <th class="w-6 text-center" style="padding-left:0;padding-right:0">#</th>
-                        <th style="width:260px">Date</th>
-                        <th style="width:100%"></th>
-                        <th class="text-center" style="width:80px">Prepared</th>
-                        <th class="text-center" style="width:96px">Unsold</th>
-                        <th class="text-right" style="width:96px">Revenue</th>
-                        <th class="text-right" style="width:96px">COGS</th>
-                        <th class="text-right" style="width:96px">Profit</th>
+                        <th class="text-center" style="width:70px;padding-left:8px;padding-right:8px">Event ID</th>
+                        <th style="width:240px">Date</th>
+                        <th class="text-center" style="width:82px;padding-left:8px;padding-right:8px">Prepared</th>
+                        <th class="text-center" style="width:72px;padding-left:8px;padding-right:8px">Unsold</th>
+                        <th class="text-center" style="width:84px;padding-left:8px;padding-right:8px">Giveaway</th>
+                        <th class="text-right" style="width:92px;padding-left:8px;padding-right:8px">Revenue</th>
+                        <th class="text-right" style="width:84px;padding-left:8px;padding-right:8px">COGS</th>
+                        <th class="text-right" style="width:86px;padding-left:8px;padding-right:8px">Profit</th>
                       </tr>
                     </thead>
                     <tbody>
@@ -593,29 +751,33 @@ export const EventDetailPage: FC<{
                             onclick={`window.location='/events/${e.id}'`}
                           >
                             <td>
-                              <span class="py-3 min-h-[44px] flex items-center justify-center text-pink-600 dark:text-pink-400 text-callout">
+                              <span class="px-1 py-3 min-h-[44px] flex items-center justify-center text-pink-600 dark:text-pink-400 text-callout">
                                 {e.id}
                               </span>
                             </td>
                             <td>
-                              <span class="px-4 py-3 min-h-[44px] flex items-center text-gray-600 dark:text-zinc-400 text-callout whitespace-nowrap">
+                              <span class="px-2 py-3 min-h-[44px] flex items-center text-gray-600 dark:text-zinc-400 text-callout whitespace-nowrap">
                                 <span class="text-callout text-gray-400 dark:text-zinc-500 mr-3">{d.weekday}</span>
                                 <span>{d.rest}</span>
                               </span>
                             </td>
-                            <td></td>
                             <td>
-                              <span class="px-4 py-3 min-h-[44px] flex items-center justify-center text-gray-600 dark:text-zinc-400 text-callout">
+                              <span class="px-2 py-3 min-h-[44px] flex items-center justify-center text-gray-600 dark:text-zinc-400 text-callout">
                                 {e.totalPrepared}
                               </span>
                             </td>
                             <td>
-                              <span class="px-4 py-3 min-h-[44px] flex items-center justify-center text-gray-600 dark:text-zinc-400 text-callout">
+                              <span class="px-2 py-3 min-h-[44px] flex items-center justify-center text-gray-600 dark:text-zinc-400 text-callout">
                                 {remaining}
                               </span>
                             </td>
                             <td>
-                              <span class="px-4 py-3 min-h-[44px] flex items-center justify-end whitespace-nowrap">
+                              <span class="px-2 py-3 min-h-[44px] flex items-center justify-center text-gray-600 dark:text-zinc-400 text-callout">
+                                {e.totalGiveaway || 0}
+                              </span>
+                            </td>
+                            <td>
+                              <span class="px-2 py-3 min-h-[44px] flex items-center justify-end whitespace-nowrap">
                                 {e.totalRevenue > 0 ? (
                                   <span class="text-gray-900 dark:text-zinc-100 text-callout">{formatCurrency(e.totalRevenue)}</span>
                                 ) : (
@@ -624,7 +786,7 @@ export const EventDetailPage: FC<{
                               </span>
                             </td>
                             <td>
-                              <span class="px-4 py-3 min-h-[44px] flex items-center justify-end whitespace-nowrap">
+                              <span class="px-2 py-3 min-h-[44px] flex items-center justify-end whitespace-nowrap">
                                 {e.totalCost > 0 ? (
                                   <span class="text-gray-600 dark:text-zinc-400 text-callout">{formatCurrency(e.totalCost)}</span>
                                 ) : (
@@ -633,7 +795,7 @@ export const EventDetailPage: FC<{
                               </span>
                             </td>
                             <td>
-                              <span class="px-4 py-3 min-h-[44px] flex items-center justify-end whitespace-nowrap">
+                              <span class="px-2 py-3 min-h-[44px] flex items-center justify-end whitespace-nowrap">
                                 {e.netProfit > 0 ? (
                                   <span class="text-green-600 dark:text-green-400 text-callout">{formatCurrency(e.netProfit)}</span>
                                 ) : e.netProfit < 0 ? (
@@ -650,6 +812,28 @@ export const EventDetailPage: FC<{
                   </table>
                 </div>
               )}
+            </div>
+
+            <div class="px-5 pt-4 pb-2">
+              <h3 class="text-title-3 text-gray-900 dark:text-zinc-100">Additional Information</h3>
+              <p class="text-callout text-gray-900 dark:text-zinc-100 mt-1">
+                Keep notes for this event.
+              </p>
+              <div class="mt-4">
+                <label class="block text-headline text-gray-500 dark:text-zinc-400 mb-1.5">Notes</label>
+                <textarea
+                  name="notes"
+                  rows={6}
+                  placeholder="Add notes..."
+                  hx-patch={`/events/${event.id}`}
+                  hx-trigger="change delay:500ms"
+                  hx-swap="none"
+                  hx-vals="js:{notes: event.target.value}"
+                  class="w-full px-3 py-2 rounded-xl border border-gray-200 dark:border-[#262626] bg-white dark:bg-[#0a0a0a] text-callout text-gray-900 dark:text-zinc-100 focus:ring-2 focus:ring-pink-500 focus:border-pink-500 resize-y min-h-[150px]"
+                >
+                  {plainNoteValue(event.notes)}
+                </textarea>
+              </div>
             </div>
           </div>
 
@@ -669,153 +853,37 @@ export const EventDetailPage: FC<{
             </div>
             <div class="px-1 pt-1 pb-0">
               <h3 class="text-headline text-gray-900 dark:text-zinc-100 mb-0.5">Location</h3>
-              <div class="flex items-center gap-1.5 group/edit">
-                <svg
-                  class="text-black dark:text-zinc-100 shrink-0"
-                  style="width:0.9em;height:0.9em"
-                  fill="none"
-                  stroke="currentColor"
-                  viewBox="0 0 24 24"
-                >
-                  <path stroke-linecap="round" stroke-linejoin="round" stroke-width={2} d="M15.232 5.232l3.536 3.536m-2.036-5.036a2.5 2.5 0 113.536 3.536L6.5 21.036H3v-3.572L16.732 3.732z" />
-                </svg>
-                <input
-                  name="location"
-                  value={event.location ?? ''}
-                  placeholder="Click to add address"
-                  hx-patch={`/events/${event.id}`}
-                  hx-trigger="change delay:500ms"
-                  hx-swap="none"
-                  hx-vals="js:{location: event.target.value}"
-                  class="text-callout text-gray-900 dark:text-zinc-100 hover:text-pink-600 dark:hover:text-pink-400 hover:bg-gray-50 dark:hover:bg-[#171717] px-2 -ml-2 rounded transition-colors bg-transparent border-0 focus:ring-2 focus:ring-pink-500 w-full"
-                />
-              </div>
+              <input
+                type="text"
+                name="location"
+                value={event.location ?? ''}
+                placeholder="Click to add address"
+                hx-patch={`/events/${event.id}`}
+                hx-trigger="change delay:500ms"
+                hx-swap="none"
+                hx-vals="js:{location: event.target.value}"
+                class="w-full text-left text-callout text-gray-900 dark:text-zinc-100 hover:text-pink-600 dark:hover:text-pink-400 hover:bg-gray-50 dark:hover:bg-[#171717] px-0 rounded transition-colors bg-transparent border-0 focus:ring-2 focus:ring-pink-500"
+              />
             </div>
+
             <div class="px-1 pt-1">
               <h3 class="text-headline text-gray-900 dark:text-zinc-100 mb-3">Event Info & Payments</h3>
               <div class="grid grid-cols-2 gap-x-6 gap-y-2 items-start">
                 <div>
-                  <div class="space-y-3">
-                    <div class="flex flex-col gap-0.5">
-                      <span class="text-headline text-gray-500 dark:text-zinc-400">Date</span>
-                      <div class="flex items-center gap-1.5 group/edit">
-                        <svg
-                          class="text-black dark:text-zinc-100 shrink-0"
-                          style="width:0.9em;height:0.9em"
-                          fill="none"
-                          stroke="currentColor"
-                          viewBox="0 0 24 24"
-                        >
-                          <path stroke-linecap="round" stroke-linejoin="round" stroke-width={2} d="M15.232 5.232l3.536 3.536m-2.036-5.036a2.5 2.5 0 113.536 3.536L6.5 21.036H3v-3.572L16.732 3.732z" />
-                        </svg>
-                        <input
-                          type="date"
-                          name="eventDate"
-                          value={event.eventDate.slice(0, 10)}
-                          hx-patch={`/events/${event.id}`}
-                          hx-trigger="change"
-                          hx-swap="none"
-                          hx-vals="js:{eventDate: event.target.value}"
-                          class="text-headline text-gray-900 dark:text-zinc-100 hover:text-pink-600 dark:hover:text-pink-400 hover:bg-gray-50 dark:hover:bg-[#171717] px-2 -ml-2 rounded transition-colors bg-transparent border-0 focus:ring-2 focus:ring-pink-500"
-                        />
-                      </div>
-                    </div>
-                    <div class="flex flex-col gap-0.5">
-                      <span class="text-headline text-gray-500 dark:text-zinc-400">Fee</span>
-                      <div class="flex items-center gap-1.5 group/edit">
-                        <svg
-                          class="text-black dark:text-zinc-100 shrink-0"
-                          style="width:0.9em;height:0.9em"
-                          fill="none"
-                          stroke="currentColor"
-                          viewBox="0 0 24 24"
-                        >
-                          <path stroke-linecap="round" stroke-linejoin="round" stroke-width={2} d="M15.232 5.232l3.536 3.536m-2.036-5.036a2.5 2.5 0 113.536 3.536L6.5 21.036H3v-3.572L16.732 3.732z" />
-                        </svg>
-                        <input
-                          type="number"
-                          step="0.01"
-                          name="eventCost"
-                          value={String(event.eventCost ?? 0)}
-                          hx-patch={`/events/${event.id}`}
-                          hx-trigger="change delay:500ms"
-                          hx-swap="none"
-                          hx-vals="js:{eventCost: parseFloat(event.target.value)||0}"
-                          class="text-callout text-gray-900 dark:text-zinc-100 hover:text-pink-600 dark:hover:text-pink-400 hover:bg-gray-50 dark:hover:bg-[#171717] px-2 -ml-2 rounded transition-colors bg-transparent border-0 focus:ring-2 focus:ring-pink-500"
-                        />
-                      </div>
-                    </div>
+                  <div class="space-y-2.5">
+                    {dateField('Date', 'eventDate', event.eventDate)}
+                    {moneyField('Fee', 'eventCost', event.eventCost)}
                   </div>
                 </div>
                 <div>
-                  <div class="space-y-3">
-                    <div class="flex flex-col gap-0.5">
-                      <span class="text-headline text-gray-500 dark:text-zinc-400">Cash</span>
-                      <input
-                        type="number"
-                        step="0.01"
-                        name="cashCollected"
-                        value={String(event.cashCollected ?? 0)}
-                        hx-patch={`/events/${event.id}`}
-                        hx-trigger="change delay:500ms"
-                        hx-swap="none"
-                        hx-vals="js:{cashCollected: parseFloat(event.target.value)||0}"
-                        class="text-callout text-gray-900 dark:text-zinc-100 hover:text-pink-600 dark:hover:text-pink-400 hover:bg-gray-50 dark:hover:bg-[#171717] px-2 -ml-2 rounded transition-colors bg-transparent border-0 focus:ring-2 focus:ring-pink-500"
-                      />
-                    </div>
-                    <div class="flex flex-col gap-0.5">
-                      <span class="text-headline text-gray-500 dark:text-zinc-400">Venmo</span>
-                      <input
-                        type="number"
-                        step="0.01"
-                        name="venmoCollected"
-                        value={String(event.venmoCollected ?? 0)}
-                        hx-patch={`/events/${event.id}`}
-                        hx-trigger="change delay:500ms"
-                        hx-swap="none"
-                        hx-vals="js:{venmoCollected: parseFloat(event.target.value)||0}"
-                        class="text-callout text-gray-900 dark:text-zinc-100 hover:text-pink-600 dark:hover:text-pink-400 hover:bg-gray-50 dark:hover:bg-[#171717] px-2 -ml-2 rounded transition-colors bg-transparent border-0 focus:ring-2 focus:ring-pink-500"
-                      />
-                    </div>
-                    <div class="flex flex-col gap-0.5">
-                      <span class="text-headline text-gray-500 dark:text-zinc-400">Other</span>
-                      <input
-                        type="number"
-                        step="0.01"
-                        name="otherCollected"
-                        value={String(event.otherCollected ?? 0)}
-                        hx-patch={`/events/${event.id}`}
-                        hx-trigger="change delay:500ms"
-                        hx-swap="none"
-                        hx-vals="js:{otherCollected: parseFloat(event.target.value)||0}"
-                        class="text-callout text-gray-900 dark:text-zinc-100 hover:text-pink-600 dark:hover:text-pink-400 hover:bg-gray-50 dark:hover:bg-[#171717] px-2 -ml-2 rounded transition-colors bg-transparent border-0 focus:ring-2 focus:ring-pink-500"
-                      />
-                    </div>
-                    <div class="flex flex-col gap-0.5">
-                      <span class="text-headline text-gray-500 dark:text-zinc-400">Total</span>
-                      <span class="text-callout px-2 -ml-2 text-green-600 dark:text-green-400 flex items-center gap-1.5 whitespace-nowrap">
-                        {formatCurrency(collectedTotal)}
-                      </span>
-                    </div>
+                  <div class="space-y-2.5">
+                    {moneyField('Cash', 'cashCollected', event.cashCollected)}
+                    {moneyField('Venmo', 'venmoCollected', event.venmoCollected)}
+                    {moneyField('Other', 'otherCollected', event.otherCollected)}
+                    {readOnlyField('Total', formatCurrency(collectedTotal), 'text-green-600 dark:text-green-400')}
                   </div>
                 </div>
               </div>
-            </div>
-            <div class="px-1 py-5 delivery-detail-notes-editor">
-              {/* TODO: Quill rich-text editor (web-b uses react-quill-new with bold/italic/underline). For now: plain textarea. */}
-              <h3 class="text-headline text-gray-900 dark:text-zinc-100 mb-2">Notes</h3>
-              <textarea
-                name="notes"
-                rows={6}
-                placeholder="Add notes..."
-                hx-patch={`/events/${event.id}`}
-                hx-trigger="change delay:500ms"
-                hx-swap="none"
-                hx-vals="js:{notes: event.target.value}"
-                class="w-full px-3 py-2 rounded-xl border border-gray-200 dark:border-[#262626] bg-white dark:bg-[#0a0a0a] text-callout text-gray-900 dark:text-zinc-100 focus:ring-2 focus:ring-pink-500 focus:border-pink-500 resize-y min-h-[160px]"
-              >
-                {event.notes ?? ''}
-              </textarea>
             </div>
           </div>
         </div>
