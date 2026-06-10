@@ -40,7 +40,8 @@ function ipBadge(ip: string | null): IpInfo {
     ip.startsWith('172.19.') ||
     ip.startsWith('172.2') ||
     ip.startsWith('172.30.') ||
-    ip.startsWith('172.31.')
+    ip.startsWith('172.31.') ||
+    ip.startsWith('169.254.')
   if (isLocal) {
     return { glyph: '🇺🇸', city: 'Schenectady, NY 12308', ip }
   }
@@ -94,16 +95,21 @@ const ACTION_BADGES: Record<string, ActionBadge> = {
 }
 
 // ───────────────────────── Helpers ─────────────────────────
+function isUnknownCreatedAt(iso: string): boolean {
+  return !iso || iso === 'CURRENT_TIMESTAMP'
+}
+
 function parseCreatedAt(iso: string): Date {
   // Audit rows can come back as 'CURRENT_TIMESTAMP' (server-default sentinel)
   // or as actual ISO timestamps. Normalize defensively.
-  if (!iso || iso === 'CURRENT_TIMESTAMP') return new Date()
+  if (isUnknownCreatedAt(iso)) return new Date(0)
   const normalized = iso.endsWith('Z') || iso.includes('T') ? iso : iso.replace(' ', 'T') + 'Z'
   const d = new Date(normalized)
-  return isNaN(d.getTime()) ? new Date() : d
+  return isNaN(d.getTime()) ? new Date(0) : d
 }
 
 export function formatRelative(iso: string): string {
+  if (isUnknownCreatedAt(iso)) return 'unknown time'
   const d = parseCreatedAt(iso)
   const diffMs = Date.now() - d.getTime()
   const diffSec = Math.floor(diffMs / 1000)
@@ -118,6 +124,7 @@ export function formatRelative(iso: string): string {
 }
 
 export function formatAbsolute(iso: string): string {
+  if (isUnknownCreatedAt(iso)) return 'unknown time'
   const d = parseCreatedAt(iso)
   return d.toLocaleString('en-US', {
     month: 'short',
@@ -130,6 +137,7 @@ export function formatAbsolute(iso: string): string {
 }
 
 function dayHeading(iso: string): string {
+  if (isUnknownCreatedAt(iso)) return 'Unknown date'
   const d = parseCreatedAt(iso)
   return d.toLocaleDateString('en-US', {
     weekday: 'long',
@@ -173,6 +181,7 @@ export function applyFilters(rows: AuditRow[], filters: ActivityFilters): AuditR
       if (!label.includes(fs) && !String(r.entityId).includes(fs)) return false
     }
     if (ffrom || fto) {
+      if (isUnknownCreatedAt(r.createdAt)) return false
       const d = parseCreatedAt(r.createdAt)
       // Compare on date-only (yyyy-mm-dd)
       const ymd = d.toISOString().slice(0, 10)
@@ -192,6 +201,13 @@ function groupByDay(rows: AuditRow[]): Array<[string, AuditRow[]]> {
     map.get(key)!.push(r)
   }
   return [...map.entries()]
+}
+
+function sortAuditRows(rows: AuditRow[]): AuditRow[] {
+  return [...rows].sort((a, b) => {
+    const byTime = parseCreatedAt(b.createdAt).getTime() - parseCreatedAt(a.createdAt).getTime()
+    return byTime || b.id - a.id
+  })
 }
 
 // ───────────────────────── AuditEntry (single row) ─────────────────────────
@@ -343,16 +359,17 @@ export const ActivityResults: FC<{
   totalCount: number
   filtered: AuditRow[]
 }> = ({ rows, totalCount, filtered }) => {
-  const groups = groupByDay(filtered)
+  const sorted = sortAuditRows(filtered)
+  const groups = groupByDay(sorted)
   return (
     <>
-      {filtered.length !== totalCount && (
+      {sorted.length !== totalCount && (
         <p class="text-callout text-gray-500 dark:text-zinc-400 mb-4 px-8">
-          Showing {filtered.length} of {totalCount}.
+          Showing {sorted.length} of {totalCount}.
         </p>
       )}
       <div class="px-8 pb-8">
-        {filtered.length === 0 ? (
+        {sorted.length === 0 ? (
           <div class="text-center py-12 text-gray-400 dark:text-zinc-500">
             {rows.length === 0
               ? 'No activity yet — start editing to see actions appear here.'

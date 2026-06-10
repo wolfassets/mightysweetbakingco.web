@@ -1,4 +1,5 @@
 import { Hono } from 'hono'
+import type { Context } from 'hono'
 import { api } from '../lib/api.js'
 import {
   EventsPage,
@@ -34,6 +35,18 @@ function parseSortParams(c: { req: { query: (k: string) => string | undefined } 
   const dir: SortDir = rawDir === 'asc' ? 'asc' : 'desc'
   const archived = c.req.query('archived') === '1' || c.req.query('archived') === 'true'
   return { sort, dir, archived }
+}
+
+async function readEventPatchBody(c: Context): Promise<Record<string, unknown>> {
+  const contentType = c.req.header('content-type') ?? ''
+  if (contentType.includes('application/json')) {
+    return (await c.req.json()) as Record<string, unknown>
+  }
+  return (await c.req.parseBody()) as Record<string, unknown>
+}
+
+function shouldReturnEventRow(c: Context, id: number): boolean {
+  return c.req.header('hx-target') === `event-${id}`
 }
 
 // Wrap every JSX literal in a small html() shim so the returned response
@@ -94,19 +107,21 @@ eventsRoutes.post('/events/quick-add', async (c) => {
 // ───── PATCH /events/:id — partial update, returns updated row ─────
 eventsRoutes.patch('/events/:id', async (c) => {
   const id = Number(c.req.param('id'))
-  const form = await c.req.parseBody()
+  const form = await readEventPatchBody(c)
   const body: Record<string, unknown> = {}
   for (const k of Object.keys(form)) {
     const v = form[k]
     if (k === 'eventCost' || k === 'cashCollected' || k === 'venmoCollected' || k === 'otherCollected') {
-      body[k] = Number(v ?? 0)
+      body[k] = typeof v === 'number' ? v : Number(v ?? 0)
     } else if (k === 'location' || k === 'notes') {
-      body[k] = v === '' ? null : String(v)
+      body[k] = v === '' || v == null ? null : String(v)
     } else {
       body[k] = String(v)
     }
   }
   await api.patch(`/events/${id}`, body)
+
+  if (!shouldReturnEventRow(c, id)) return c.body(null, 204)
 
   const { archived } = parseSortParams(c)
   const path = archived ? '/events?archived=true' : '/events'

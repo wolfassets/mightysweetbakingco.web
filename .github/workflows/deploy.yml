@@ -5,68 +5,95 @@ on:
     branches: [main]
   pull_request:
     branches: [main]
+  workflow_dispatch:
 
-# Only one deploy at a time. New pushes cancel in-flight deploys.
 concurrency:
   group: deploy-web-${{ github.ref }}
   cancel-in-progress: true
 
+env:
+  NODE_VERSION: "22"
+  WEB_PATH: /home/ubuntu/services/mightysweet/apps/web-c
+  PUBLIC_HEALTH_URL: https://p1.wolfassets.org/_health
+
 jobs:
-  # ───────────────────────────────────────────────────────────────────────────
-  # Build gate — install deps + compile Tailwind. Hosted runner, no secrets.
-  # The app runs via `tsx` (no compile step), so `tsc` is informational only.
-  # ───────────────────────────────────────────────────────────────────────────
   build:
     name: Build CSS + typecheck
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+
       - uses: actions/setup-node@v4
         with:
-          node-version: 22
-      - name: Install
+          node-version: ${{ env.NODE_VERSION }}
+
+      - name: Install dependencies
         run: npm install --no-audit --no-fund --ignore-scripts
+
       - name: Build Tailwind CSS
         run: npm run build:css
-      - name: Typecheck (informational — app runs via tsx, not tsc)
-        run: npx tsc --noEmit
-        continue-on-error: true
 
-  # ───────────────────────────────────────────────────────────────────────────
-  # Deploy — SSH to the Toronto VM and trigger its forced command. The deploy
-  # key on the VM can ONLY run `~/deploy-web.sh` (git reset --hard origin/main,
-  # npm install, build:css, restart web-c.service); it has no shell and cannot
-  # pass arguments. So even if DEPLOY_SSH_KEY leaked, an attacker could only
-  # redeploy main — which they'd already control via a merged PR.
-  # ───────────────────────────────────────────────────────────────────────────
+      - name: Typecheck
+        run: npm run typecheck
+
   deploy:
-    name: Deploy to Oracle Toronto
+    name: Deploy web to Oracle nodes
     needs: build
     if: github.ref == 'refs/heads/main' && github.event_name == 'push'
     runs-on: ubuntu-latest
-    timeout-minutes: 8
+    timeout-minutes: 12
     steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+
+      - name: Build deploy assets
+        run: |
+          npm install --no-audit --no-fund --ignore-scripts
+          npm run build:css
+
       - name: Set up SSH agent
         uses: webfactory/ssh-agent@v0.9.1
         with:
           ssh-private-key: ${{ secrets.DEPLOY_SSH_KEY }}
 
-      - name: Trust the VM's host key
+      - name: Trust Oracle node host keys
         run: |
           mkdir -p ~/.ssh
-          ssh-keyscan -t ed25519,rsa 40.233.108.39 >> ~/.ssh/known_hosts 2>/dev/null
+          ssh-keyscan -t ed25519,rsa 150.230.27.121 >> ~/.ssh/known_hosts 2>/dev/null
+          ssh-keyscan -t ed25519,rsa 147.5.108.22 >> ~/.ssh/known_hosts 2>/dev/null
 
-      - name: Trigger deploy (forced command on VM)
-        run: ssh -o StrictHostKeyChecking=accept-new ubuntu@40.233.108.39 true
-
-      - name: Wait for health
+      - name: Rolling deploy
         run: |
-          for i in $(seq 1 30); do
-            if curl -fsS --max-time 5 https://dev.p1.wolfassets.org/ >/dev/null; then
-              echo "✅ live after ~$((i * 2))s"
-              exit 0
-            fi
-            sleep 2
+          set -euo pipefail
+
+          for host in 150.230.27.121 147.5.108.22; do
+            echo "Deploying web to ${host}"
+
+            ssh ubuntu@"${host}" "mkdir -p ${WEB_PATH}"
+
+            rsync -az --delete \
+              --exclude '.git' \
+              --exclude 'node_modules' \
+              --exclude '.env' \
+              ./ ubuntu@"${host}":"${WEB_PATH}/"
+
+            ssh ubuntu@"${host}" "
+              set -euo pipefail
+              cd ${WEB_PATH}
+              npm install --no-audit --no-fund --ignore-scripts
+              npm run build:css
+              sudo systemctl restart web-c
+              for i in \$(seq 1 30); do
+                curl -fsS --max-time 5 http://127.0.0.1:4002/_health >/dev/null && exit 0
+                sleep 2
+              done
+              echo 'web-c did not become healthy'
+              exit 1
+            "
           done
-          echo "❌ site never came back up"
-          exit 1
+
+      - name: Smoke test load balancer
+        run: curl -fsS --max-time 10 "${PUBLIC_HEALTH_URL}"

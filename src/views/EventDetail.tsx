@@ -73,6 +73,121 @@ function plainNoteValue(value: string | null | undefined): string {
   return value
 }
 
+const readMapKitToken = () => process.env.MAPKIT_TOKEN ?? process.env.NEXT_PUBLIC_MAPKIT_TOKEN ?? ''
+
+const mapKitLoaderScript = (token: string) => `
+(function(w){
+  if (w.__mscLoadMapKit) return;
+  var SCRIPT_ID = 'apple-mapkit-js';
+  var TOKEN = ${JSON.stringify(token)};
+  var loadPromise = null;
+  w.__mscLoadMapKit = function(){
+    if (typeof w === 'undefined') return Promise.resolve();
+    if (!TOKEN) return Promise.reject(new Error('MapKit token missing'));
+    if (w.mapkit && w.mapkit.Coordinate) return Promise.resolve();
+    if (loadPromise) return loadPromise;
+    loadPromise = new Promise(function(resolve, reject){
+      var existing = document.getElementById(SCRIPT_ID);
+      if (existing) {
+        if (w.mapkit) {
+          try { w.mapkit.init({ authorizationCallback: function(done){ done(TOKEN); } }); } catch(e){}
+          resolve();
+        }
+        existing.addEventListener('load', function(){
+          if (w.mapkit) {
+            w.mapkit.init({ authorizationCallback: function(done){ done(TOKEN); } });
+          }
+          resolve();
+        }, { once: true });
+        existing.addEventListener('error', function(){ reject(new Error('MapKit load failed')); }, { once: true });
+        return;
+      }
+      var s = document.createElement('script');
+      s.id = SCRIPT_ID;
+      s.src = 'https://cdn.apple-mapkit.com/mk/5.x.x/mapkit.js';
+      s.crossOrigin = 'anonymous';
+      s.onload = function(){
+        if (!w.mapkit) { reject(new Error('MapKit failed to attach')); return; }
+        try { w.mapkit.init({ authorizationCallback: function(done){ done(TOKEN); } }); } catch(e){}
+        resolve();
+      };
+      s.onerror = function(){ reject(new Error('MapKit load failed')); };
+      document.head.appendChild(s);
+    });
+    return loadPromise;
+  };
+})(window);
+`
+
+const EVENT_MAP_SCRIPT = (location: string, label: string, dateLabel: string) => `
+(function(){
+  function setLoading(text, color){
+    var loading = document.getElementById('event-map-loading');
+    if (!loading) return;
+    loading.textContent = text;
+    loading.style.opacity = '1';
+    loading.style.color = color || '';
+  }
+  window.__mscRenderEventMap = function(location, label, dateLabel){
+    var container = document.getElementById('event-map-canvas');
+    if (!container) return;
+    container.innerHTML = '';
+    if (!location) {
+      setLoading('No location set');
+      return;
+    }
+    setLoading('Loading map...');
+    function init(){
+      var scheme = document.documentElement.classList.contains('dark') ? 'dark' : 'light';
+      var map = new window.mapkit.Map(container, {
+        showsCompass: window.mapkit.FeatureVisibility.Adaptive,
+        showsScale: window.mapkit.FeatureVisibility.Adaptive,
+        colorScheme: scheme === 'dark' ? window.mapkit.Map.ColorSchemes.Dark : window.mapkit.Map.ColorSchemes.Light,
+      });
+      var geocoder = new window.mapkit.Geocoder();
+      geocoder.lookup(location, function(err, res){
+        if (err || !res || !res.results || !res.results.length) {
+          setLoading('Could not geocode location', '#ef4444');
+          return;
+        }
+        var raw = res.results[0].coordinate;
+        var lat = Number(raw && raw.latitude);
+        var lng = Number(raw && raw.longitude);
+        if (!isFinite(lat) || !isFinite(lng)) {
+          setLoading('Invalid location coordinates', '#ef4444');
+          return;
+        }
+        var coord = new window.mapkit.Coordinate(lat, lng);
+        var marker = new window.mapkit.MarkerAnnotation(coord, {
+          title: label || 'Event',
+          subtitle: dateLabel || '',
+          color: '#ec4899',
+          glyphColor: '#ffffff',
+        });
+        try { map.addAnnotation(marker); } catch(e){}
+        map.region = new window.mapkit.CoordinateRegion(coord, new window.mapkit.CoordinateSpan(0.35, 0.35));
+        var loading = document.getElementById('event-map-loading');
+        if (loading) loading.style.opacity = '0';
+      });
+    }
+    function go(){
+      if (!window.__mscLoadMapKit) {
+        setTimeout(go, 50);
+        return;
+      }
+      window.__mscLoadMapKit().then(function(){
+        if (!window.mapkit || !window.mapkit.Coordinate) throw new Error('MapKit unavailable');
+        init();
+      }).catch(function(){
+        setLoading('Map failed to load', '#ef4444');
+      });
+    }
+    go();
+  };
+  window.__mscRenderEventMap(${JSON.stringify(location || '')}, ${JSON.stringify(label)}, ${JSON.stringify(dateLabel)});
+})();
+`
+
 // ────────────────────────────────────────────────────────────
 // Inline JS (loaded once per page) — hold-to-delete row buttons,
 // add-flavor modal show/hide, rate-dropdown htmx hookup.
@@ -281,10 +396,11 @@ const EditableNumberInput: FC<{
     : `js:{"${field}": parseInt(event.target.value)||0}`
   const target = rowTargetId ? `#${rowTargetId}` : 'this'
   const swap = rowTargetId ? 'outerHTML' : 'none'
-  return (
+  const input = (
     <input
       type="number"
       step={step}
+      min="0"
       value={String(value)}
       hx-patch={patchUrl}
       hx-trigger="change"
@@ -298,6 +414,15 @@ const EditableNumberInput: FC<{
           : `w-full text-center text-callout bg-transparent dark:text-zinc-100 border border-transparent hover:border-gray-200 dark:hover:border-[#262626] focus:border-pink-300 focus:ring-2 focus:ring-pink-500 rounded px-1 py-0.5 ${className ?? ''}`
       }
     />
+  )
+  if (inline || showPencil === false) return input
+  return (
+    <div class="flex items-center justify-center gap-1">
+      <svg class="w-3.5 h-3.5 shrink-0 text-gray-900 dark:text-zinc-100" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
+        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15.232 5.232l3.536 3.536m-2.036-5.036a2.5 2.5 0 113.536 3.536L6.5 21.036H3v-3.572L16.732 3.732z"></path>
+      </svg>
+      <div class="min-w-0 flex-1">{input}</div>
+    </div>
   )
 }
 
@@ -359,7 +484,7 @@ export const EventItemRow: FC<{
       </td>
       <td>
         <div class="px-2 py-3 min-h-[44px] flex items-center justify-center">
-          <div class="w-14">
+          <div class="w-[76px]">
             <EditableNumberInput
               value={(it as any).prepared ?? 0}
               patchUrl={`/event-items/${it.id}`}
@@ -370,13 +495,20 @@ export const EventItemRow: FC<{
         </div>
       </td>
       <td>
-        <span class="px-2 py-3 min-h-[44px] flex items-center justify-center text-gray-600 dark:text-zinc-400 text-callout text-center">
-          {remaining}
-        </span>
+        <div class="px-2 py-3 min-h-[44px] flex items-center justify-center">
+          <div class="w-[76px]">
+            <EditableNumberInput
+              value={remaining}
+              patchUrl={`/event-items/${it.id}`}
+              field="remaining"
+              rowTargetId={rowId}
+            />
+          </div>
+        </div>
       </td>
       <td>
         <div class="px-2 py-3 min-h-[44px] flex items-center justify-center">
-          <div class="w-14">
+          <div class="w-[76px]">
             <EditableNumberInput
               value={giveaway}
               patchUrl={`/event-items/${it.id}`}
@@ -388,12 +520,12 @@ export const EventItemRow: FC<{
       </td>
       <td>
         <span class="px-2 py-3 min-h-[44px] flex items-center justify-end text-gray-600 dark:text-zinc-400 text-callout text-right">
-          {revenue > 0 ? formatCurrency(revenue) : '—'}
+          {formatCurrency(revenue)}
         </span>
       </td>
       <td>
         <span class="px-2 py-3 min-h-[44px] flex items-center justify-end text-callout text-right text-gray-600 dark:text-zinc-400">
-          {cogs > 0 ? formatCurrency(cogs) : '—'}
+          {formatCurrency(cogs)}
         </span>
       </td>
       <td>
@@ -403,7 +535,7 @@ export const EventItemRow: FC<{
           ) : profit < 0 ? (
             <span class="text-red-500 dark:text-red-400 text-callout">{formatCurrency(profit)}</span>
           ) : (
-            '—'
+            <span class="text-gray-600 dark:text-zinc-400 text-callout">{formatCurrency(profit)}</span>
           )}
         </span>
       </td>
@@ -840,16 +972,16 @@ export const EventDetailPage: FC<{
           {/* Right column: 350px */}
           <div class="space-y-4">
             <div class="relative h-[350px] w-[350px] max-w-full overflow-hidden rounded-2xl border border-gray-200 bg-white dark:border-[#262626] dark:bg-[#0a0a0a]">
-              {event.location ? (
-                <div class="absolute inset-0 flex items-center justify-center text-callout text-gray-400 dark:text-zinc-500 p-4 text-center">
-                  {/* TODO: Apple MapKit JS — for now a static placeholder. */}
-                  {event.location}
-                </div>
-              ) : (
-                <div class="absolute inset-0 flex items-center justify-center text-callout text-gray-400 dark:text-zinc-500">
-                  No location set
-                </div>
-              )}
+              <div id="event-map-loading" class="absolute inset-0 flex items-center justify-center text-callout text-gray-400 dark:text-zinc-500">
+                {event.location ? 'Loading map...' : 'No location set'}
+              </div>
+              <div id="event-map-canvas" class="absolute inset-0" />
+              <script dangerouslySetInnerHTML={{ __html: mapKitLoaderScript(readMapKitToken()) }} />
+              <script
+                dangerouslySetInnerHTML={{
+                  __html: EVENT_MAP_SCRIPT(event.location ?? '', event.name, dateLong(event.eventDate)),
+                }}
+              />
             </div>
             <div class="px-1 pt-1 pb-0">
               <h3 class="text-headline text-gray-900 dark:text-zinc-100 mb-0.5">Location</h3>
@@ -859,9 +991,13 @@ export const EventDetailPage: FC<{
                 value={event.location ?? ''}
                 placeholder="Click to add address"
                 hx-patch={`/events/${event.id}`}
-                hx-trigger="change delay:500ms"
+                hx-trigger="keyup changed delay:600ms, change, blur changed"
                 hx-swap="none"
                 hx-vals="js:{location: event.target.value}"
+                hx-on--after-request="if(event.detail.successful && window.__mscRenderEventMap){window.__mscRenderEventMap(this.value, this.dataset.eventName, this.dataset.eventDateLabel)}"
+                onkeydown="if(event.key === 'Enter'){event.preventDefault(); this.blur();}"
+                data-event-name={event.name}
+                data-event-date-label={dateLong(event.eventDate)}
                 class="w-full text-left text-callout text-gray-900 dark:text-zinc-100 hover:text-pink-600 dark:hover:text-pink-400 hover:bg-gray-50 dark:hover:bg-[#171717] px-0 rounded transition-colors bg-transparent border-0 focus:ring-2 focus:ring-pink-500"
               />
             </div>

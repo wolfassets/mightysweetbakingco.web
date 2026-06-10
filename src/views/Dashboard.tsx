@@ -8,8 +8,21 @@ import type { Delivery } from './Deliveries.js'
 // ────────────────────────────────────────────────────────────────────────────
 
 interface FlavorItem {
+  id?: number
+  eventId?: number
+  deliveryId?: number
   flavorName: string
   prepared: number | null
+  remaining?: number | null
+  giveaway?: number | null
+  sold?: number | null
+  revenue?: number | null
+  rateId?: number | null
+}
+
+interface FlavorRate {
+  id: number
+  price: number
 }
 
 interface MonthlyTrendPoint {
@@ -58,6 +71,34 @@ const formatCurrency = (value: number) =>
     maximumFractionDigits: 2,
   }).format(value)
 
+const isDonationEvent = (e: Event): boolean =>
+  e.totalGiveaway > 0 || (e.totalRevenue === 0 && e.totalPrepared > 0)
+
+const donatedQuantityForItem = (e: Event, item: FlavorItem): number => {
+  const giveaway = item.giveaway ?? 0
+  if (giveaway > 0) return giveaway
+  if (e.totalRevenue === 0 && e.totalPrepared > 0) return item.prepared ?? 0
+  return 0
+}
+
+const itemRatePrice = (item: FlavorItem, ratesById: Map<number, FlavorRate>): number => {
+  if (item.rateId) return ratesById.get(item.rateId)?.price ?? 0
+  const sold = item.sold ?? 0
+  return sold > 0 ? (item.revenue ?? 0) / sold : 0
+}
+
+const donatedValueForEvent = (
+  e: Event,
+  itemsByEvent: Map<number, FlavorItem[]>,
+  ratesById: Map<number, FlavorRate>,
+): number =>
+  (itemsByEvent.get(e.id) ?? []).reduce((sum, item) => {
+    return sum + donatedQuantityForItem(e, item) * itemRatePrice(item, ratesById)
+  }, 0)
+
+const donatedQuantityForEvent = (e: Event, itemsByEvent: Map<number, FlavorItem[]>): number =>
+  (itemsByEvent.get(e.id) ?? []).reduce((sum, item) => sum + donatedQuantityForItem(e, item), 0)
+
 // ────────────────────────────────────────────────────────────────────────────
 // DashboardPage — server-rendered, all aggregations identical to web-b
 // ────────────────────────────────────────────────────────────────────────────
@@ -67,7 +108,8 @@ export const DashboardPage: FC<{
   deliveries: Delivery[]
   eventItems: FlavorItem[]
   deliveryItems: FlavorItem[]
-}> = ({ events, deliveries: rawDeliveries, eventItems, deliveryItems }) => {
+  rates: FlavorRate[]
+}> = ({ events, deliveries: rawDeliveries, eventItems, deliveryItems, rates }) => {
   // Filter out archived deliveries (mirror web-b line 125)
   const deliveries = rawDeliveries.filter((d) => !d.deletedAt)
 
@@ -89,7 +131,26 @@ export const DashboardPage: FC<{
   // Aggregate stats
   const eventRevenue = events.reduce((sum, e) => sum + e.totalRevenue, 0)
   const deliveryRevenue = deliveries.reduce((sum, d) => sum + d.totalRevenue, 0)
-  const totalRevenue = eventRevenue + deliveryRevenue
+  const grossRevenue = eventRevenue + deliveryRevenue
+
+  const eventItemsByEvent = new Map<number, FlavorItem[]>()
+  for (const item of eventItems) {
+    if (item.eventId == null) continue
+    const items = eventItemsByEvent.get(item.eventId) ?? []
+    items.push(item)
+    eventItemsByEvent.set(item.eventId, items)
+  }
+  const ratesById = new Map(rates.map((rate) => [rate.id, rate]))
+  const donationEvents = events.filter(isDonationEvent)
+  const totalDonatedValue = donationEvents.reduce(
+    (sum, e) => sum + donatedValueForEvent(e, eventItemsByEvent, ratesById),
+    0,
+  )
+  const totalDonatedCookies = donationEvents.reduce(
+    (sum, e) => sum + donatedQuantityForEvent(e, eventItemsByEvent),
+    0,
+  )
+  const totalRevenue = Math.max(grossRevenue - totalDonatedValue, 0)
 
   const eventProfit = events.reduce((sum, e) => sum + e.netProfit, 0)
   const deliveryProfit = deliveries.reduce((sum, d) => sum + d.grossProfit, 0)
@@ -271,12 +332,12 @@ export const DashboardPage: FC<{
           {/* Row 1 — Stats */}
           <div class="grid grid-cols-12 gap-4" style="height: 120px;" data-stagger>
             {/* Total Revenue */}
-            <div class="col-span-5 row-span-1 bg-gradient-to-br from-pink-500 to-pink-600 rounded-3xl p-5 text-white flex items-center justify-between">
+            <div class="col-span-4 row-span-1 bg-gradient-to-br from-pink-500 to-pink-600 rounded-3xl p-5 text-white flex items-center justify-between">
               <div>
-                <p class="text-pink-100 text-headline">Total Revenue</p>
+                <p class="text-pink-100 text-headline">Net Revenue</p>
                 <p class="text-title-1 num mt-1">{formatCurrency(totalRevenue)}</p>
                 <p class="text-pink-200 text-callout mt-1">
-                  From {eventsWithSales.length} events and {deliveriesWithRevenue.length} deliveries
+                  Sales minus {formatCurrency(totalDonatedValue)} donated
                 </p>
               </div>
               <div class="text-right">
@@ -286,9 +347,9 @@ export const DashboardPage: FC<{
             </div>
 
             {/* Total Profit */}
-            <div class="col-span-3 row-span-1 bg-green-50 dark:bg-green-950/40 rounded-3xl p-4 flex flex-col justify-center">
+            <div class="col-span-2 row-span-1 bg-green-50 dark:bg-green-950/40 rounded-3xl p-4 flex flex-col justify-center">
               <p class="text-headline text-green-600 dark:text-green-400 ">Total Profit</p>
-              <p class="text-title-1 num text-green-600 dark:text-green-400 mt-1">{formatCurrency(totalProfit)}</p>
+              <p class="text-title-2 num text-green-600 dark:text-green-400 mt-1">{formatCurrency(totalProfit)}</p>
               <p class="text-callout text-green-500 dark:text-green-400 mt-1">
                 {formatCurrency(totalProfit / (totalSources || 1))} avg
               </p>
@@ -297,17 +358,28 @@ export const DashboardPage: FC<{
             {/* Profit Margin — liquid glass */}
             <div class="col-span-2 row-span-1 bg-amber-50 dark:bg-amber-950/40 rounded-3xl p-4 flex flex-col justify-center">
               <p class="text-headline text-amber-700 dark:text-amber-400">Profit Margin</p>
-              <p class="text-title-1 num text-amber-700 dark:text-amber-400 mt-1">{profitMargin.toFixed(1)}%</p>
+              <p class="text-title-2 num text-amber-700 dark:text-amber-400 mt-1">{profitMargin.toFixed(1)}%</p>
               <p class="text-callout text-amber-600 dark:text-amber-400/70 mt-1">overall</p>
             </div>
 
             {/* Cookies Made */}
             <div class="col-span-2 row-span-1 bg-blue-50 dark:bg-blue-950/40 rounded-3xl p-4 flex flex-col justify-center">
               <p class="text-headline text-blue-600 dark:text-blue-400 ">Cookies Made</p>
-              <p class="text-title-1 num text-blue-600 dark:text-blue-400 mt-1">
+              <p class="text-title-2 num text-blue-600 dark:text-blue-400 mt-1">
                 {Math.round(totalCookiesMade).toLocaleString()}
               </p>
               <p class="text-callout text-blue-500 dark:text-blue-400 mt-1">all-time</p>
+            </div>
+
+            {/* Donations */}
+            <div class="col-span-2 row-span-1 bg-violet-50 dark:bg-violet-950/40 rounded-3xl p-4 flex flex-col justify-center">
+              <p class="text-headline text-violet-600 dark:text-violet-400">Donations</p>
+              <p class="text-title-2 num text-violet-600 dark:text-violet-400 mt-1">
+                {formatCurrency(totalDonatedValue)}
+              </p>
+              <p class="text-callout text-violet-500 dark:text-violet-400 mt-1">
+                {Math.round(totalDonatedCookies).toLocaleString()} cookies
+              </p>
             </div>
           </div>
 

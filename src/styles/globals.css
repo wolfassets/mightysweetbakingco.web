@@ -839,7 +839,7 @@ canvas, svg.no-transition, img, video, .mk-map-view, [data-no-transition] {
   animation-delay: calc(var(--i, 0) * 40ms);
 }
 
-/* Card entrance — picks up children of [data-stagger] root, lays out a 
+/* Card entrance — picks up children of [data-stagger] root, lays out a
    stagger by nth-child. Used by Dashboard / Experimental rows. */
 [data-stagger] > * {
   opacity: 0;

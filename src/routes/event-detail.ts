@@ -1,5 +1,5 @@
 import { Hono } from 'hono'
-import type { JSX } from 'hono/jsx'
+import type { Context } from 'hono'
 
 import { api } from '../lib/api.js'
 import { EventDetailPage, EventItemRow } from '../views/EventDetail.js'
@@ -8,15 +8,15 @@ import type { Flavor, FlavorPrice } from '../views/Flavors.js'
 
 const eventDetail = new Hono()
 
-const page = (c: { html: (s: string) => Response }, jsx: JSX.Element) =>
-  c.html('<!DOCTYPE html>' + jsx.toString())
+const page = (c: Pick<Context, 'html'>, jsx: unknown) =>
+  c.html('<!DOCTYPE html>' + String(jsx))
 
 // ────────────────────────────────────────────────────────────
 // Parse an htmx-submitted body. The view uses hx-vals js:{...}
 // which sends JSON. The add-flavor form is parseBody (form-data).
 // ────────────────────────────────────────────────────────────
 
-async function readBody(c: Parameters<Parameters<typeof eventDetail.patch>[1]>[0]): Promise<Record<string, unknown>> {
+async function readBody(c: Context): Promise<Record<string, unknown>> {
   const ct = c.req.header('content-type') ?? ''
   if (ct.includes('application/json')) {
     return (await c.req.json()) as Record<string, unknown>
@@ -68,7 +68,7 @@ eventDetail.get('/events/:id', async (c) => {
       flavors: flavors ?? [],
       prices: prices ?? [],
       allEvents: allEvents ?? [],
-    }) as JSX.Element,
+    }),
   )
 })
 
@@ -146,7 +146,7 @@ eventDetail.post('/event-items', async (c) => {
   const items = await api.get<EventItem[]>(`/event-items?eventId=${eventId}`)
   const latest = items[items.length - 1]
   if (!latest) return c.body('', 200)
-  return c.html(EventItemRow({ it: latest as any, flavors, prices }) as JSX.Element)
+  return c.html(String(EventItemRow({ it: latest as any, flavors, prices })))
 })
 
 // ────────────────────────────────────────────────────────────
@@ -187,7 +187,7 @@ eventDetail.patch('/event-items/:id', async (c) => {
     api.get<Flavor[]>('/flavors?includeArchived=true'),
     api.get<FlavorPrice[]>('/flavor-prices?includeArchived=true'),
   ])
-  return c.html(EventItemRow({ it: it as any, flavors, prices }) as JSX.Element)
+  return c.html(String(EventItemRow({ it: it as any, flavors, prices })))
 })
 
 // ────────────────────────────────────────────────────────────
@@ -227,7 +227,7 @@ eventDetail.patch('/event-items/:id/rate', async (c) => {
   const refreshed = await api.get<EventItem[]>('/event-items')
   const newIt = refreshed.find((x) => x.id === id)
   if (!newIt) return c.body(null, 204)
-  return c.html(EventItemRow({ it: newIt as any, flavors, prices }) as JSX.Element)
+  return c.html(String(EventItemRow({ it: newIt as any, flavors, prices })))
 })
 
 // ────────────────────────────────────────────────────────────

@@ -6,8 +6,21 @@ import type { Event } from '../views/Events.js'
 import type { Delivery } from '../views/Deliveries.js'
 
 interface FlavorItem {
+  id?: number
+  eventId?: number
+  deliveryId?: number
   flavorName: string
   prepared: number | null
+  remaining?: number | null
+  giveaway?: number | null
+  sold?: number | null
+  revenue?: number | null
+  rateId?: number | null
+}
+
+interface FlavorRate {
+  id: number
+  price: number
 }
 
 const dashboardRoutes = new Hono()
@@ -15,11 +28,12 @@ const dashboardRoutes = new Hono()
 // ───── GET / — full dashboard page ─────
 dashboardRoutes.get('/', async (c) => {
   try {
-    const [events, deliveries, eventItems, deliveryItems] = await Promise.all([
+    const [events, deliveries, eventItems, deliveryItems, rates] = await Promise.all([
       api.get<Event[]>('/events'),
       api.get<Delivery[]>('/deliveries'),
       api.get<FlavorItem[]>('/event-items'),
       api.get<FlavorItem[]>('/delivery-items'),
+      api.get<FlavorRate[]>('/flavor-prices'),
     ])
     const html =
       '<!DOCTYPE html>' +
@@ -29,6 +43,7 @@ dashboardRoutes.get('/', async (c) => {
           deliveries={deliveries}
           eventItems={eventItems}
           deliveryItems={deliveryItems}
+          rates={rates}
         />
       ).toString()
     return c.html(html)

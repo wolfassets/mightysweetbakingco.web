@@ -501,7 +501,7 @@ export const EventRow: FC<{ e: Event; showArchived?: boolean }> = ({ e, showArch
       </span>
     </td>
     <td>
-      <span class="px-4 py-3 min-h-[44px] flex items-center text-gray-900 dark:text-zinc-100 text-headline">
+      <span class="px-4 py-3 min-h-[44px] flex items-center text-gray-900 dark:text-zinc-100 text-headline whitespace-nowrap">
         {e.name}
       </span>
     </td>
@@ -870,7 +870,7 @@ export const EventsCard: FC<{
           <thead>
             <tr>
               <SortableHeader label="#" column="id" currentColumn={sortColumn} direction={sortDirection} className="w-12 text-center" showArchived={showArchived} />
-              <SortableHeader label="Event Name" column="name" currentColumn={sortColumn} direction={sortDirection} className="w-52" showArchived={showArchived} />
+              <SortableHeader label="Event Name" column="name" currentColumn={sortColumn} direction={sortDirection} className="w-80" showArchived={showArchived} />
               <SortableHeader label="Date" column="eventDate" currentColumn={sortColumn} direction={sortDirection} className="w-44" showArchived={showArchived} />
               <SortableHeader label="Prepared" column="totalPrepared" currentColumn={sortColumn} direction={sortDirection} className="w-20 text-center" showArchived={showArchived} />
               <SortableHeader label="Sold" column="totalSold" currentColumn={sortColumn} direction={sortDirection} className="w-14 text-center" showArchived={showArchived} />

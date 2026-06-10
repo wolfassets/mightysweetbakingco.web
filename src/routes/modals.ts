@@ -18,7 +18,6 @@
  */
 
 import { Hono } from 'hono'
-import type { JSX } from 'hono/jsx'
 import { api } from '../lib/api.js'
 import {
   AddStoreChoice,
@@ -55,17 +54,17 @@ modalsRoutes.get('/modals/empty', (c) => c.html(''))
 modalsRoutes.get('/modals/add-store', async (c) => {
   const deliveries = await api.get<Delivery[]>('/deliveries')
   const stores = uniqueStoreNames(deliveries)
-  return c.html(AddStoreChoice({ storeCount: stores.length }) as JSX.Element)
+  return c.html(String(AddStoreChoice({ storeCount: stores.length })))
 })
 
 modalsRoutes.get('/modals/add-store/existing', async (c) => {
   const deliveries = await api.get<Delivery[]>('/deliveries')
   const stores = uniqueStoreNames(deliveries)
-  return c.html(AddStoreExisting({ stores }) as JSX.Element)
+  return c.html(String(AddStoreExisting({ stores })))
 })
 
 modalsRoutes.get('/modals/add-store/new', (c) =>
-  c.html(AddStoreNew({}) as JSX.Element),
+  c.html(String(AddStoreNew({}))),
 )
 
 // POST /modals/add-store — create a delivery + close modal + refresh list.
@@ -92,16 +91,16 @@ modalsRoutes.post('/modals/add-store', async (c) => {
   const table = DeliveriesTableView({
     deliveries: deliveries.filter((d) => !d.deletedAt),
     view: 'by-date',
-  }) as JSX.Element
+  })
   // Wrap so the existing #delivery-list outerHTML swap target matches.
-  const html = `<div id="delivery-list">${table.toString()}</div>`
+  const html = `<div id="delivery-list">${String(table)}</div>`
   return c.html(html)
 })
 
 // ───── DeliveriesMapModal ─────
 modalsRoutes.get('/modals/deliveries-map', async (c) => {
   const deliveries = await api.get<Delivery[]>('/deliveries')
-  return c.html(DeliveriesMapModalView({ deliveries }) as JSX.Element)
+  return c.html(String(DeliveriesMapModalView({ deliveries })))
 })
 
 // Detail card lookup — the side list rows + map marker selects both target
@@ -112,7 +111,7 @@ modalsRoutes.get('/modals/deliveries-map/:id', async (c) => {
   const deliveries = await api.get<Delivery[]>('/deliveries')
   const d = deliveries.find((x) => x.id === id)
   if (!d) return c.html('', 404)
-  return c.html(DeliveryDetailCard({ d }) as JSX.Element)
+  return c.html(String(DeliveryDetailCard({ d })))
 })
 
 export default modalsRoutes

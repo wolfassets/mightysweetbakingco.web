@@ -1,11 +1,12 @@
 import { Hono } from 'hono'
+import type { Context } from 'hono'
 import { api } from '../lib/api.js'
 import { ExperimentalPage, type EventItem, type DeliveryItem } from '../views/Experimental.js'
 import { Layout } from '../views/Layout.js'
 import type { Event } from '../views/Events.js'
 import type { Delivery } from '../views/Deliveries.js'
 
-const page = (c: { html: (s: string) => Response }, jsx: unknown) =>
+const page = (c: Pick<Context, 'html'>, jsx: unknown) =>
   c.html('<!DOCTYPE html>' + String(jsx))
 
 export const experimentalRoutes = new Hono()

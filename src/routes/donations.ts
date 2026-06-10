@@ -15,7 +15,12 @@
 import { Hono } from 'hono'
 import type { Context } from 'hono'
 import { api } from '../lib/api.js'
-import { DonationsPage, type DonationEvent } from '../views/Donations.js'
+import {
+  DonationsPage,
+  type DonationEvent,
+  type DonationEventItem,
+  type DonationRate,
+} from '../views/Donations.js'
 
 const donationsRoutes = new Hono()
 
@@ -32,9 +37,13 @@ async function page(c: Context, jsx: unknown): Promise<Response> {
 donationsRoutes.get('/donations', async (c) => {
   // The upstream /events endpoint excludes soft-archived events by default;
   // we filter explicitly here too in case the api ever flips that default.
-  const events = await api.get<DonationEvent[]>('/events')
+  const [events, eventItems, rates] = await Promise.all([
+    api.get<DonationEvent[]>('/events'),
+    api.get<DonationEventItem[]>('/event-items'),
+    api.get<DonationRate[]>('/flavor-prices'),
+  ])
   const live = events.filter((e) => !e.deletedAt)
-  return page(c, DonationsPage({ events: live }))
+  return page(c, DonationsPage({ events: live, eventItems, rates }))
 })
 
 export default donationsRoutes
