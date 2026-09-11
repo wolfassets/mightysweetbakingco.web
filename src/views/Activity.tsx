@@ -12,6 +12,13 @@ export interface AuditRow {
   beforeJson: string | null
   afterJson: string | null
   ipAddress: string | null
+  ipLocation?: {
+    status: 'resolved' | 'internal' | 'unavailable'
+    countryCode: string | null
+    country: string | null
+    city: string | null
+    approximate: boolean
+  }
   createdAt: string
 }
 
@@ -22,7 +29,12 @@ interface IpInfo {
   ip: string | null
 }
 
-function ipBadge(ip: string | null): IpInfo {
+function ipBadge(ip: string | null, location?: AuditRow['ipLocation']): IpInfo {
+  if (location?.status === 'resolved' && /^[A-Z]{2}$/.test(location.countryCode ?? '')) {
+    const flag = [...location.countryCode!].map((letter) => String.fromCodePoint(127397 + letter.charCodeAt(0))).join('')
+    return { glyph: flag, city: [location.city, location.country].filter(Boolean).join(', '), ip }
+  }
+  if (location?.status === 'internal') return { glyph: '🌐', city: 'Internal network', ip }
   if (!ip) return { glyph: '·', city: 'unknown', ip: null }
   const isLocal =
     ip === '::1' ||
@@ -36,7 +48,7 @@ function ipBadge(ip: string | null): IpInfo {
   if (isLocal) {
     return { glyph: '🌐', city: 'Internal network', ip }
   }
-  return { glyph: '🌐', city: null, ip }
+  return { glyph: '🌐', city: 'Location unavailable', ip }
 }
 
 export interface ActivityFilters {
@@ -213,14 +225,14 @@ export const AuditEntry: FC<{ r: AuditRow }> = ({ r }) => {
   }
   const fields: string[] = r.changedFields ? safeParse<string[]>(r.changedFields) || [] : []
   const entityLabel = ENTITY_LABELS[r.entityType] ?? r.entityType
-  const ip = ipBadge(r.ipAddress)
+  const ip = ipBadge(r.ipAddress, r.ipLocation)
 
   return (
     <div
-      class="flex items-center gap-3 px-4 py-1.5 rounded-xl hover:bg-gray-50 dark:hover:bg-[#171717] transition-colors fade-in"
+      class="flex flex-wrap items-center gap-x-3 gap-y-1 px-4 py-1.5 rounded-xl hover:bg-gray-50 dark:hover:bg-[#171717] transition-colors fade-in"
       data-audit-id={String(r.id)}
     >
-      <span class="flex items-center gap-1.5 text-callout text-gray-500 dark:text-zinc-400 whitespace-nowrap">
+      <span title="Approximate location based on IP address" class="flex flex-wrap items-center gap-1.5 text-callout text-gray-500 dark:text-zinc-400 min-w-0 break-words w-full sm:w-auto">
         <span class="text-callout">{ip.glyph}</span>
         {ip.city && <span>{ip.city}</span>}
         {ip.ip && <span class="text-callout text-gray-400 dark:text-zinc-500">{ip.ip}</span>}
@@ -435,9 +447,9 @@ export function renderAuditEntryHtml(r: AuditRow): string {
         }</span>`
       : ''
 
-  const ip = ipBadge(r.ipAddress)
+  const ip = ipBadge(r.ipAddress, r.ipLocation)
   const ipBlock =
-    `<span class="flex items-center gap-1.5 text-callout text-gray-500 dark:text-zinc-400 whitespace-nowrap">` +
+    `<span title="Approximate location based on IP address" class="flex flex-wrap items-center gap-1.5 text-callout text-gray-500 dark:text-zinc-400 min-w-0 break-words w-full sm:w-auto">` +
     `<span class="text-callout">${ip.glyph}</span>` +
     (ip.city ? `<span>${esc(ip.city)}</span>` : '') +
     (ip.ip ? `<span class="text-callout text-gray-400 dark:text-zinc-500">${esc(ip.ip)}</span>` : '') +
@@ -445,7 +457,7 @@ export function renderAuditEntryHtml(r: AuditRow): string {
     `<span class="text-callout text-gray-400 dark:text-zinc-600 whitespace-nowrap">·</span>`
 
   return (
-    `<div class="flex items-center gap-3 px-4 py-1.5 rounded-xl hover:bg-gray-50 dark:hover:bg-[#171717] transition-colors fade-in" data-audit-id="${r.id}">` +
+    `<div class="flex flex-wrap items-center gap-x-3 gap-y-1 px-4 py-1.5 rounded-xl hover:bg-gray-50 dark:hover:bg-[#171717] transition-colors fade-in" data-audit-id="${r.id}">` +
     ipBlock +
     `<span class="text-callout text-gray-500 dark:text-zinc-400 whitespace-nowrap">${esc(entityLabel)}</span>` +
     `<span class="text-button-sm px-2.5 py-0.5 rounded-full border whitespace-nowrap ${badge.className}">${esc(
