@@ -1,9 +1,17 @@
+import { AsyncLocalStorage } from 'node:async_hooks'
+
 const API_BASE = process.env.API_BASE ?? 'http://localhost:3000'
+export const apiRequestContext = new AsyncLocalStorage<{ ip: string | null }>()
 
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
+  const headers = new Headers(init?.headers)
+  headers.set('content-type', 'application/json')
+  headers.delete('x-forwarded-for')
+  const ip = apiRequestContext.getStore()?.ip
+  if (ip) headers.set('x-forwarded-for', ip)
   const res = await fetch(`${API_BASE}${path}`, {
     ...init,
-    headers: { 'content-type': 'application/json', ...(init?.headers ?? {}) },
+    headers,
   })
   if (!res.ok) {
     const body = await res.text()

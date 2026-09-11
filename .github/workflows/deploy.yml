@@ -85,6 +85,9 @@ jobs:
               cd ${WEB_PATH}
               npm install --no-audit --no-fund --ignore-scripts
               npm run build:css
+              sudo mkdir -p /etc/systemd/system/web-c.service.d
+              sudo install -m 644 infra/api-local.conf /etc/systemd/system/web-c.service.d/api-local.conf
+              sudo systemctl daemon-reload
               sudo systemctl restart web-c
               for i in \$(seq 1 30); do
                 curl -fsS --max-time 5 http://127.0.0.1:4002/_health >/dev/null && exit 0

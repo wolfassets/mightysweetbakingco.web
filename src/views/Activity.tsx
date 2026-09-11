@@ -15,11 +15,7 @@ export interface AuditRow {
   createdAt: string
 }
 
-// Render an IP as a flag + city + ip. For local dev (::1 / 127.0.0.1 / private
-// subnets) we hardcode the operator's location (Schenectady, NY) so the feed
-// shows something useful instead of "Localhost". Real public IPs fall through
-// to a 🌐 glyph + raw address — full city geolocation via ipapi.co is TODO
-// (would need a per-IP fetch with in-memory cache).
+// An internal address cannot establish the visitor's location.
 interface IpInfo {
   glyph: string
   city: string | null
@@ -34,16 +30,11 @@ function ipBadge(ip: string | null): IpInfo {
     ip === '::ffff:127.0.0.1' ||
     ip.startsWith('192.168.') ||
     ip.startsWith('10.') ||
-    ip.startsWith('172.16.') ||
-    ip.startsWith('172.17.') ||
-    ip.startsWith('172.18.') ||
-    ip.startsWith('172.19.') ||
-    ip.startsWith('172.2') ||
-    ip.startsWith('172.30.') ||
-    ip.startsWith('172.31.') ||
-    ip.startsWith('169.254.')
+    /^172\.(1[6-9]|2\d|3[01])\./.test(ip) ||
+    ip.startsWith('169.254.') ||
+    /^(fc|fd|fe[89ab])[0-9a-f]*:/i.test(ip)
   if (isLocal) {
-    return { glyph: '🇺🇸', city: 'Schenectady, NY 12308', ip }
+    return { glyph: '🌐', city: 'Internal network', ip }
   }
   return { glyph: '🌐', city: null, ip }
 }

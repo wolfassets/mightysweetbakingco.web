@@ -3,6 +3,8 @@ import { serveStatic } from '@hono/node-server/serve-static'
 import { Hono } from 'hono'
 
 import { statSync } from 'node:fs'
+import { isIP } from 'node:net'
+import { apiRequestContext } from './lib/api.js'
 import flavorsRoutes from './routes/flavors.js'
 import eventsRoutes from './routes/events.js'
 import eventDetailRoutes from './routes/event-detail.js'
@@ -20,6 +22,19 @@ const PORT = Number(process.env.PORT ?? 4002)
 const API_BASE = process.env.API_BASE ?? 'http://localhost:3000'
 
 export const app = new Hono()
+
+app.use('*', async (c, next) => {
+  const remote = (c.env as { incoming?: { socket?: { remoteAddress?: string } } } | undefined)
+    ?.incoming?.socket?.remoteAddress
+  let ip = remote?.replace(/^::ffff:/, '') ?? null
+  // Only Caddy on this machine may identify the original caller.
+  if (ip === '127.0.0.1' || ip === '::1') {
+    const forwarded = c.req.header('x-forwarded-for')?.split(',').at(-1)?.trim()
+    if (forwarded && isIP(forwarded)) ip = forwarded
+  }
+  if (ip && !isIP(ip)) ip = null
+  await apiRequestContext.run({ ip }, next)
+})
 
 // Static assets (compiled Tailwind CSS, fonts). cwd = apps/web-c during dev.
 app.use(
